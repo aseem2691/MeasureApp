@@ -22,11 +22,14 @@ class MeasurementManager(
     private val onMeasurementChanged: (String) -> Unit
 ) {
     data class MeasurementLabel(val position: Position, val distance: Float)
+    data class MeasurementChain(val segments: MutableList<Float> = mutableListOf())
     
     private val anchors = mutableListOf<Anchor>()
     private val nodes = mutableListOf<AnchorNode>()
     private val segmentDistances = mutableListOf<Float>() // Store each segment distance
     val labels = mutableListOf<MeasurementLabel>() // 3D positions for labels
+    private val measurementChains = mutableListOf<MeasurementChain>() // Track separate measurement chains
+    private var currentChain = MeasurementChain()
 
     // Rubber Banding State
     private var tempLineNode: CylinderNode? = null
@@ -65,21 +68,23 @@ class MeasurementManager(
         }
     }
 
-    fun addPoint(anchor: Anchor) {
+    fun addPoint(anchor: Anchor, isExistingAnchor: Boolean = false) {
         anchors.add(anchor)
         hasStartedMeasurement = true
         
-        // 1. Render the corner point (Sphere)
-        val anchorNode = AnchorNode(sceneView.engine, anchor)
-        sceneView.addChildNode(anchorNode)
-        nodes.add(anchorNode)
-        
-        SphereNode(
-            engine = sceneView.engine,
-            radius = 0.015f, // 1.5cm
-            materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
-        ).apply {
-            parent = anchorNode
+        // 1. Render the corner point (Sphere) only if it's a new anchor
+        if (!isExistingAnchor) {
+            val anchorNode = AnchorNode(sceneView.engine, anchor)
+            sceneView.addChildNode(anchorNode)
+            nodes.add(anchorNode)
+            
+            SphereNode(
+                engine = sceneView.engine,
+                radius = 0.015f, // 1.5cm
+                materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
+            ).apply {
+                parent = anchorNode
+            }
         }
 
         // 2. Handle Measurement Logic
@@ -147,14 +152,44 @@ class MeasurementManager(
         
         // Store segment distance and label position
         segmentDistances.add(distance)
+        currentChain.segments.add(distance)
         val midpoint = point1 + (difference * 0.5f)
         labels.add(MeasurementLabel(midpoint, distance))
         
-        val segmentNum = segmentDistances.size
-        onMeasurementChanged("Segment $segmentNum: ${formatDistance(distance)}")
+        // Show current chain total
+        val currentChainTotal = currentChain.segments.sum()
+        if (currentChain.segments.size == 1) {
+            onMeasurementChanged("${formatDistance(distance)}")
+        } else {
+            onMeasurementChanged("Total: ${formatDistance(currentChainTotal)} (${currentChain.segments.size} segments)")
+        }
     }
 
+    fun getNearbyAnchor(hitPose: Pose): Anchor? {
+        // Check if hit is within 5cm of any existing anchor
+        val snapDistance = 0.05f // 5cm threshold
+        
+        for (anchor in anchors) {
+            val anchorPose = anchor.pose
+            val dx = hitPose.tx() - anchorPose.tx()
+            val dy = hitPose.ty() - anchorPose.ty()
+            val dz = hitPose.tz() - anchorPose.tz()
+            val distance = sqrt(dx * dx + dy * dy + dz * dz)
+            
+            if (distance <= snapDistance) {
+                return anchor // Return existing anchor for snapping
+            }
+        }
+        return null
+    }
+    
     fun finishCurrentMeasurement() {
+        // Save current chain and start new one
+        if (currentChain.segments.isNotEmpty()) {
+            measurementChains.add(currentChain)
+            currentChain = MeasurementChain() // Start fresh chain
+        }
+        
         // Break the chain - allows starting a NEW separate measurement
         lastAnchor = null
         isMeasuring = true // Keep measuring mode ON for next measurement
@@ -168,20 +203,17 @@ class MeasurementManager(
         tempLineNode = null
         currentLivePosition = null
         
-        // Show summary of all measurements
-        if (segmentDistances.isNotEmpty()) {
-            val totalDistance = segmentDistances.sum()
+        // Show summary of all measurement chains
+        if (measurementChains.isNotEmpty()) {
             val summary = buildString {
-                append("Total: ${formatDistance(totalDistance)}")
-                if (segmentDistances.size > 1) {
-                    append(" | ")
-                    segmentDistances.forEachIndexed { index, distance ->
-                        append("Seg ${index + 1}: ${formatDistance(distance)}")
-                        if (index < segmentDistances.size - 1) append(" | ")
-                    }
+                append("Measurements: ")
+                measurementChains.forEachIndexed { index, chain ->
+                    val chainTotal = chain.segments.sum()
+                    append("${index + 1}: ${formatDistance(chainTotal)}")
+                    if (index < measurementChains.size - 1) append(" | ")
                 }
             }
-            onMeasurementChanged("$summary\nTap + for new measurement")
+            onMeasurementChanged("$summary\nTap + for new")
         } else {
             onMeasurementChanged("Tap + to start new measurement")
         }
@@ -242,6 +274,8 @@ class MeasurementManager(
         segmentDistances.clear()
         labels.clear()
         currentLivePosition = null
+        measurementChains.clear()
+        currentChain = MeasurementChain()
         isMeasuring = true
         hasStartedMeasurement = false
         

@@ -113,22 +113,20 @@ class MeasureActivity : AppCompatActivity() {
                 val centerX = sceneView.width / 2f
                 val centerY = sceneView.height / 2f
                 
-                // 1. Perform Hit Test
-                val hitResult = frame.hitTest(centerX, centerY).firstOrNull { hit ->
+                // 1. Perform Hit Test with proper filtering
+                // Take the first hit that has a tracked trackable (Plane or Point)
+                val hits = frame.hitTest(centerX, centerY)
+                
+                val hitResult = hits.firstOrNull { hit ->
                     val trackable = hit.trackable
-                    when (trackable) {
-                        is com.google.ar.core.Plane -> {
-                            trackable.isPoseInPolygon(hit.hitPose) && 
-                            trackable.type == com.google.ar.core.Plane.Type.HORIZONTAL_UPWARD_FACING
-                        }
-                        is com.google.ar.core.Point -> {
-                            trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                        }
-                        else -> false
-                    }
+                    (trackable is com.google.ar.core.Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
+                    (trackable is com.google.ar.core.Point && 
+                     trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL) ||
+                    // Fallback: Allow any Plane hit even outside polygon (for edges)
+                    (trackable is com.google.ar.core.Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING)
                 }
                 
-                // Validate distance from camera (max 3m)
+                // Validate distance from camera (max 5m for better range)
                 val validHitResult = hitResult?.let { hit ->
                     val hitPose = hit.hitPose
                     val cameraPose = camera.pose
@@ -136,7 +134,7 @@ class MeasureActivity : AppCompatActivity() {
                     val dy = hitPose.ty() - cameraPose.ty()
                     val dz = hitPose.tz() - cameraPose.tz()
                     val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                    if (distance <= 3.0f) hit else null
+                    if (distance <= 5.0f) hit else null
                 }
                 
                 lastHitResult = validHitResult
@@ -243,8 +241,19 @@ class MeasureActivity : AppCompatActivity() {
         val hitResult = lastHitResult
         
         if (hitResult != null) {
-            val anchor = hitResult.createAnchor()
-            measurementManager.addPoint(anchor)
+            // Check if we're near an existing anchor point
+            val nearbyAnchor = measurementManager.getNearbyAnchor(hitResult.hitPose)
+            
+            if (nearbyAnchor != null) {
+                // Snap to existing anchor - reuse it
+                measurementManager.addPoint(nearbyAnchor, isExistingAnchor = true)
+                Toast.makeText(this, "Snapped to existing point", Toast.LENGTH_SHORT).show()
+            } else {
+                // Create new anchor
+                val anchor = hitResult.createAnchor()
+                measurementManager.addPoint(anchor, isExistingAnchor = false)
+            }
+            
             measurementOverlay.postInvalidate()
             
             // Show and enable Done button after first point
