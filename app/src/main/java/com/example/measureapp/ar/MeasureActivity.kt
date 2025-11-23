@@ -14,6 +14,7 @@ import com.example.measureapp.R
 import com.google.ar.core.CameraConfig
 import com.google.ar.core.CameraConfigFilter
 import com.google.ar.core.Config
+import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
@@ -36,6 +37,7 @@ class MeasureActivity : AppCompatActivity() {
 
     private lateinit var measurementManager: MeasurementManager
     private var lastHitResult: com.google.ar.core.HitResult? = null
+    private lateinit var smartCursor: SmartCursorNode
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,6 +67,9 @@ class MeasureActivity : AppCompatActivity() {
         
         // Connect overlay to manager
         measurementOverlay.measurementManager = measurementManager
+        
+        // Hide 2D reticle (we're using 3D now)
+        centerReticle.visibility = android.view.View.GONE
         
         promptText.text = "Move to start"
 
@@ -103,6 +108,13 @@ class MeasureActivity : AppCompatActivity() {
             // Make planes more visible - white dots show detected surfaces
             isShadowReceiver = false
         }
+        
+        // Initialize Smart 3D Cursor AFTER SceneView is configured
+        smartCursor = SmartCursorNode(sceneView)
+        sceneView.addChildNode(smartCursor)
+        smartCursor.isVisible = true
+        smartCursor.testVisibility()
+        Log.d(TAG, "Smart 3D Cursor initialized and added to scene")
         
         // Initial prompt
         promptText.text = "Move phone to detect surface"
@@ -183,42 +195,64 @@ class MeasureActivity : AppCompatActivity() {
                 
                 lastHitResult = validHitResult
                 
-                // 2. UPDATE THE MANAGER - This draws the dynamic rubber band line!
+                // 2. COMPUTE SMART CURSOR STATE with edge/vertex snapping
+                // Collect all tracked planes for edge detection
+                val trackedPlanes = session?.getAllTrackables(com.google.ar.core.Plane::class.java)
+                    ?.filter { it.trackingState == com.google.ar.core.TrackingState.TRACKING }
+                    ?: emptyList()
+                Log.d(TAG, "Found ${trackedPlanes.size} tracked planes for edge detection")
+                
+                val cursorState = measurementManager.computeSmartCursorState(validHitResult, trackedPlanes)
+                
+                // 3. UPDATE SMART 3D CURSOR
+                if (cursorState != null) {
+                    // Create pose with position and rotation (correct order: translation then rotation)
+                    val snappedPose = Pose(
+                        floatArrayOf(
+                            cursorState.position.x,
+                            cursorState.position.y,
+                            cursorState.position.z
+                        ),
+                        floatArrayOf(
+                            cursorState.rotation.x,
+                            cursorState.rotation.y,
+                            cursorState.rotation.z,
+                            cursorState.rotation.w
+                        )
+                    )
+                    smartCursor.updateCursor(snappedPose, cursorState.isSnapped)
+                    smartCursor.smoothUpdate()
+                } else {
+                    // Fallback: Show cursor 1m in front of camera (for testing visibility)
+                    val cameraPose = camera.pose
+                    val forwardPose = cameraPose.compose(Pose.makeTranslation(0f, 0f, -1.0f))
+                    smartCursor.updateCursor(forwardPose, false)
+                    smartCursor.smoothUpdate()
+                }
+                
+                // 4. UPDATE THE MANAGER - This draws the dynamic rubber band line!
                 measurementManager.onUpdate(validHitResult)
                 
-                // 2b. Update overlay for 3D label rendering
+                // 5. Update overlay for 3D label rendering
                 measurementOverlay.arCamera = camera
                 measurementOverlay.postInvalidate()
                 
-                // 3. Update UI Reticle with snap detection
+                // 6. Update UI based on cursor state
                 runOnUiThread {
-                    // Check if we're snapped to a corner by looking at the prompt text
-                    val isSnapped = promptText.text.contains("[Snapped]")
+                    val isSnapped = cursorState?.isSnapped ?: false
                     
                     if (validHitResult != null) {
-                        if (isSnapped) {
-                            // BRIGHT GREEN + Enlarged = Snapped to existing corner!
-                            centerReticle.setColorFilter(android.graphics.Color.rgb(0, 255, 0))
-                            centerReticle.scaleX = 1.3f
-                            centerReticle.scaleY = 1.3f
-                        } else {
-                            // GREEN reticle = Surface detected, safe to measure!
-                            centerReticle.setColorFilter(android.graphics.Color.GREEN)
-                            centerReticle.scaleX = 1.0f
-                            centerReticle.scaleY = 1.0f
-                        }
                         addButton.isEnabled = true
                         addButton.alpha = 1.0f
                         
                         // Update prompt only if not currently measuring
                         if (!measurementManager.hasStartedMeasurement) {
-                            promptText.text = if (isSnapped) "Tap + to snap" else "Tap + to start"
+                            promptText.text = when {
+                                isSnapped -> "Tap + to snap to ${cursorState?.snapType?.name?.lowercase()}"
+                                else -> "Tap + to start"
+                            }
                         }
                     } else {
-                        // WHITE reticle = Searching for surface
-                        centerReticle.setColorFilter(android.graphics.Color.WHITE)
-                        centerReticle.scaleX = 1.0f
-                        centerReticle.scaleY = 1.0f
                         addButton.isEnabled = true 
                         addButton.alpha = 0.5f
                         
@@ -228,9 +262,8 @@ class MeasureActivity : AppCompatActivity() {
                     }
                 }
             } else {
+                smartCursor.updateCursor(null, false)
                 runOnUiThread {
-                    // GRAY reticle = Tracking lost
-                    centerReticle.setColorFilter(android.graphics.Color.GRAY)
                     addButton.isEnabled = false
                     addButton.alpha = 0.3f
                     

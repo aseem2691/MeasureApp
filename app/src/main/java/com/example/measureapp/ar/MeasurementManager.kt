@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import com.google.ar.core.Anchor
 import com.google.ar.core.HitResult
+import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
@@ -15,6 +16,7 @@ import dev.romainguy.kotlin.math.Quaternion
 import dev.romainguy.kotlin.math.normalize
 import kotlin.math.acos
 import kotlin.math.sqrt
+import kotlin.math.min
 
 class MeasurementManager(
     private val context: Context,
@@ -205,19 +207,27 @@ class MeasurementManager(
     }
 
     private fun findNearestCorner(hitPose: Pose): AnchorNode? {
-        val snapDistance = 0.05f // 5cm threshold
+        val snapDistance = 0.15f // Increased to 15cm for easier snapping
         val hitPos = Position(hitPose.tx(), hitPose.ty(), hitPose.tz())
         
-        return cornerNodes
+        android.util.Log.d("MeasurementManager", "Checking ${cornerNodes.size} vertices for snapping to $hitPos")
+        
+        val nearest = cornerNodes
             .filter { it.anchor != null }
             .minByOrNull { node ->
                 val nodePos = node.worldPosition
                 length(nodePos - hitPos)
             }
-            ?.takeIf { node ->
-                val nodePos = node.worldPosition
-                length(nodePos - hitPos) <= snapDistance
+        
+        if (nearest != null) {
+            val dist = length(nearest.worldPosition - hitPos)
+            android.util.Log.d("MeasurementManager", "Nearest vertex at distance $dist")
+            if (dist <= snapDistance) {
+                return nearest
             }
+        }
+        
+        return null
     }
     
     private fun highlightNode(node: AnchorNode, active: Boolean) {
@@ -387,4 +397,141 @@ class MeasurementManager(
     private fun length(v: Float3) = sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
     private fun cross(a: Float3, b: Float3) = Float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
     private fun dot(a: Float3, b: Float3) = a.x * b.x + a.y * b.y + a.z * b.z
+    
+    // --- Advanced Snapping Engine ---
+    
+    /**
+     * Compute snapped cursor state with edge and vertex detection
+     */
+    fun computeSmartCursorState(hitResult: HitResult?, allPlanes: Collection<Plane>): CursorState? {
+        if (hitResult == null) return null
+        
+        val hitPose = hitResult.hitPose
+        val hitPos = Position(hitPose.tx(), hitPose.ty(), hitPose.tz())
+        
+        android.util.Log.d("MeasurementManager", "Computing cursor state - trackable: ${hitResult.trackable::class.simpleName}")
+        
+        // Priority 1: Snap to existing vertices (measurement points)
+        val nearbyVertex = findNearestCorner(hitPose)
+        if (nearbyVertex != null) {
+            android.util.Log.d("MeasurementManager", "SNAPPED TO VERTEX at ${nearbyVertex.worldPosition}")
+            return CursorState(
+                position = nearbyVertex.worldPosition,
+                rotation = Quaternion(hitPose.qx(), hitPose.qy(), hitPose.qz(), hitPose.qw()),
+                isSnapped = true,
+                snapType = SnapType.VERTEX
+            )
+        }
+        
+        // Priority 2: Snap to plane edges
+        // Find the closest plane to the hit point (works for DepthPoint and Plane hits)
+        var closestPlane: Plane? = null
+        var closestDistance = Float.MAX_VALUE
+        
+        for (plane in allPlanes) {
+            if (plane.trackingState != com.google.ar.core.TrackingState.TRACKING) continue
+            
+            // Check if point is near this plane
+            val centerPose = plane.centerPose
+            val dx = hitPos.x - centerPose.tx()
+            val dy = hitPos.y - centerPose.ty()
+            val dz = hitPos.z - centerPose.tz()
+            val distance = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+            
+            if (distance < closestDistance && distance < 0.3f) { // Within 30cm of plane center
+                closestDistance = distance
+                closestPlane = plane
+            }
+        }
+        
+        if (closestPlane != null) {
+            android.util.Log.d("MeasurementManager", "Found nearby plane, checking edges...")
+            val edgeSnap = findNearestEdge(closestPlane, hitPos)
+            if (edgeSnap != null) {
+                android.util.Log.d("MeasurementManager", "SNAPPED TO EDGE at $edgeSnap")
+                return CursorState(
+                    position = edgeSnap,
+                    rotation = Quaternion(hitPose.qx(), hitPose.qy(), hitPose.qz(), hitPose.qw()),
+                    isSnapped = true,
+                    snapType = SnapType.EDGE
+                )
+            } else {
+                android.util.Log.d("MeasurementManager", "No edge within snap threshold")
+            }
+        } else {
+            android.util.Log.d("MeasurementManager", "No nearby planes found (have ${allPlanes.size} total planes)")
+        }
+        
+        // No snapping - just return normal tracking
+        return CursorState(
+            position = hitPos,
+            rotation = Quaternion(hitPose.qx(), hitPose.qy(), hitPose.qz(), hitPose.qw()),
+            isSnapped = false,
+            snapType = SnapType.NONE
+        )
+    }
+    
+    /**
+     * Find nearest edge on a plane polygon within snap threshold
+     */
+    private fun findNearestEdge(plane: Plane, point: Position): Position? {
+        val snapThreshold = 0.15f // Increased to 15cm for easier snapping
+        val polygon = plane.polygon
+        
+        var nearestPoint: Position? = null
+        var minDistance = Float.MAX_VALUE
+        
+        // Iterate through polygon edges (FloatBuffer with x,z pairs)
+        val polySize = polygon.remaining() / 2 // Number of vertices
+        android.util.Log.d("MeasurementManager", "Checking plane with $polySize vertices, point at ${point.x}, ${point.y}, ${point.z}")
+        
+        for (i in 0 until polySize) {
+            val x1 = polygon.get(i * 2)
+            val z1 = polygon.get(i * 2 + 1)
+            
+            // Next vertex (wrap around)
+            val nextIndex = (i + 1) % polySize
+            val x2 = polygon.get(nextIndex * 2)
+            val z2 = polygon.get(nextIndex * 2 + 1)
+            
+            // Convert to world coordinates (polygon is in plane local space)
+            val planePose = plane.centerPose
+            val worldA = planePose.compose(Pose.makeTranslation(x1, 0f, z1))
+            val worldB = planePose.compose(Pose.makeTranslation(x2, 0f, z2))
+            
+            val a = Position(worldA.tx(), worldA.ty(), worldA.tz())
+            val b = Position(worldB.tx(), worldB.ty(), worldB.tz())
+            
+            // Find closest point on line segment
+            val closest = closestPointOnSegment(a, b, point)
+            val distance = length(closest - point)
+            
+            if (distance < minDistance && distance < snapThreshold) {
+                minDistance = distance
+                nearestPoint = closest
+            }
+        }
+        
+        return nearestPoint
+    }
+    
+    /**
+     * Find the closest point on a line segment (A-B) to point P
+     */
+    private fun closestPointOnSegment(a: Position, b: Position, p: Position): Position {
+        val ab = b - a
+        val ap = p - a
+        val abLengthSq = dotPos(ab, ab)
+        
+        if (abLengthSq == 0f) return a // A and B are the same point
+        
+        var t = dotPos(ap, ab) / abLengthSq
+        t = t.coerceIn(0.0f, 1.0f)
+        
+        return a + (ab * t)
+    }
+    
+    private fun dotPos(a: Position, b: Position): Float {
+        return a.x * b.x + a.y * b.y + a.z * b.z
+    }
 }
