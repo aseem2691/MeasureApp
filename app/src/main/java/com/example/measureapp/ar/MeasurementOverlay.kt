@@ -21,21 +21,29 @@ class MeasurementOverlay @JvmOverloads constructor(
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 48f
+        textSize = 56f // Larger text like ARuler
         textAlign = Paint.Align.CENTER
         isAntiAlias = true
         style = Paint.Style.FILL
         isFakeBoldText = true
+        setShadowLayer(4f, 0f, 2f, Color.BLACK) // Add shadow for depth
     }
 
     private val backgroundPaint = Paint().apply {
-        color = Color.parseColor("#DD000000")
+        color = Color.parseColor("#E6000000") // Slightly more opaque
         style = Paint.Style.FILL
         isAntiAlias = true
     }
 
-    private val padding = 20f
-    private val cornerRadius = 16f
+    private val strokePaint = Paint().apply {
+        color = Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        isAntiAlias = true
+    }
+
+    private val padding = 24f // More padding
+    private val cornerRadius = 20f // Rounder corners
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -73,13 +81,18 @@ class MeasurementOverlay @JvmOverloads constructor(
 
         // Use yellow for live measurement, dark for permanent
         if (isLive) {
-            backgroundPaint.color = Color.parseColor("#DDFFEB3B")
+            backgroundPaint.color = Color.parseColor("#F0FFD700") // Bright gold
+            strokePaint.color = Color.parseColor("#FFA500") // Orange border
         } else {
-            backgroundPaint.color = Color.parseColor("#DD000000")
+            backgroundPaint.color = Color.parseColor("#E6000000")
+            strokePaint.color = Color.WHITE
         }
 
         // Draw background
         canvas.drawRoundRect(bgRect, cornerRadius, cornerRadius, backgroundPaint)
+        
+        // Draw border for better visibility
+        canvas.drawRoundRect(bgRect, cornerRadius, cornerRadius, strokePaint)
 
         // Draw text
         textPaint.color = if (isLive) Color.BLACK else Color.WHITE

@@ -85,9 +85,13 @@ class MeasureActivity : AppCompatActivity() {
             config.depthMode = Config.DepthMode.DISABLED
         }
         
-        // Enable plane visualization
-        sceneView.planeRenderer.isEnabled = true
-        sceneView.planeRenderer.isVisible = true
+        // Enable plane visualization for better surface detection feedback
+        sceneView.planeRenderer.apply {
+            isEnabled = true
+            isVisible = true
+            // Make planes more visible (like ARuler)
+            isShadowReceiver = false
+        }
 
         sceneView.onSessionFailed = { exception ->
             Log.e(TAG, "AR Session failed", exception)
@@ -166,23 +170,33 @@ class MeasureActivity : AppCompatActivity() {
         undoButton.setOnClickListener {
             measurementManager.undo()
             measurementOverlay.postInvalidate()
-            if (measurementManager.labels.isEmpty()) {
+            if (!measurementManager.hasStartedMeasurement) {
                 doneButton.visibility = android.view.View.GONE
+                doneButton.isEnabled = false
+                doneButton.alpha = 0.5f
             }
         }
         
         doneButton.setOnClickListener {
-            measurementManager.stopMeasuring()
-            doneButton.visibility = android.view.View.GONE
-            addButton.visibility = android.view.View.GONE
-            measurementOverlay.postInvalidate()
+            if (measurementManager.hasStartedMeasurement) {
+                measurementManager.finishCurrentMeasurement()
+                doneButton.isEnabled = false
+                doneButton.alpha = 0.5f
+                addButton.isEnabled = false
+                addButton.alpha = 0.5f
+                measurementOverlay.postInvalidate()
+                promptText.text = "Measurement complete. Tap Clear to start new."
+            }
         }
 
         clearButton.setOnClickListener {
             measurementManager.clear()
             promptText.text = "Move to start"
             doneButton.visibility = android.view.View.GONE
-            addButton.visibility = android.view.View.VISIBLE
+            doneButton.isEnabled = false
+            doneButton.alpha = 0.5f
+            addButton.isEnabled = true
+            addButton.alpha = 1.0f
             measurementOverlay.postInvalidate()
         }
     }
@@ -208,9 +222,11 @@ class MeasureActivity : AppCompatActivity() {
             measurementManager.addPoint(anchor)
             measurementOverlay.postInvalidate()
             
-            // Show Done button after first segment
+            // Show and enable Done button after first point
             if (doneButton.visibility == android.view.View.GONE) {
                 doneButton.visibility = android.view.View.VISIBLE
+                doneButton.isEnabled = true
+                doneButton.alpha = 1.0f
             }
         } else {
             Toast.makeText(this, "No surface detected. Move phone to find a surface.", Toast.LENGTH_SHORT).show()

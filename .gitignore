@@ -122,3 +122,4 @@ secrets.properties
 .env
 .env.*
 logcat_file
+*.jpg

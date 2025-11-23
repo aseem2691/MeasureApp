@@ -34,6 +34,7 @@ class MeasurementManager(
     var currentLivePosition: Position? = null // For live label
     var currentLiveDistance: Float = 0f
     private var isMeasuring = true // Track if we're actively measuring
+    var hasStartedMeasurement = false // Track if user has placed at least one point
 
     // Call this every frame from MeasureActivity
     fun onUpdate(hitResult: HitResult?) {
@@ -66,6 +67,7 @@ class MeasurementManager(
 
     fun addPoint(anchor: Anchor) {
         anchors.add(anchor)
+        hasStartedMeasurement = true
         
         // 1. Render the corner point (Sphere)
         val anchorNode = AnchorNode(sceneView.engine, anchor)
@@ -152,6 +154,38 @@ class MeasurementManager(
         onMeasurementChanged("Segment $segmentNum: ${formatDistance(distance)}")
     }
 
+    fun finishCurrentMeasurement() {
+        // Stop rubber banding by clearing lastAnchor
+        lastAnchor = null
+        isMeasuring = false
+        
+        // Remove the temporary line
+        tempLineNode?.let {
+            sceneView.removeChildNode(it)
+            it.destroy()
+        }
+        tempLineNode = null
+        currentLivePosition = null
+        
+        // Show summary
+        if (segmentDistances.isNotEmpty()) {
+            val totalDistance = segmentDistances.sum()
+            val summary = buildString {
+                append("Total: ${formatDistance(totalDistance)}")
+                if (segmentDistances.size > 1) {
+                    append(" | ")
+                    segmentDistances.forEachIndexed { index, distance ->
+                        append("Seg ${index + 1}: ${formatDistance(distance)}")
+                        if (index < segmentDistances.size - 1) append(" | ")
+                    }
+                }
+            }
+            onMeasurementChanged(summary)
+        } else {
+            onMeasurementChanged("Measurement complete")
+        }
+    }
+    
     fun undo() {
         if (anchors.isEmpty()) return
         
@@ -174,6 +208,7 @@ class MeasurementManager(
         lastAnchor = anchors.lastOrNull()
         
         if (anchors.isEmpty()) {
+            hasStartedMeasurement = false
             onMeasurementChanged("Move to start")
         } else {
             onMeasurementChanged("Tap + to continue")
@@ -181,26 +216,7 @@ class MeasurementManager(
     }
     
     fun stopMeasuring() {
-        isMeasuring = false
-        // Hide the temp line
-        tempLineNode?.let {
-            sceneView.removeChildNode(it)
-            it.destroy()
-        }
-        tempLineNode = null
-        
-        // Calculate total distance
-        val totalDistance = segmentDistances.sum()
-        
-        // Build summary text with all segments
-        val summary = buildString {
-            appendLine("Total: ${formatDistance(totalDistance)}")
-            segmentDistances.forEachIndexed { index, distance ->
-                append("Seg ${index + 1}: ${formatDistance(distance)}")
-                if (index < segmentDistances.size - 1) append(" | ")
-            }
-        }
-        onMeasurementChanged(summary)
+        finishCurrentMeasurement()
     }
     
     fun clear() {
@@ -226,6 +242,7 @@ class MeasurementManager(
         labels.clear()
         currentLivePosition = null
         isMeasuring = true
+        hasStartedMeasurement = false
         
         onMeasurementChanged("Move to start")
     }
