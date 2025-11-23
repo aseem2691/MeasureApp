@@ -21,15 +21,23 @@ class MeasurementManager(
     private val sceneView: ARSceneView,
     private val onMeasurementChanged: (String) -> Unit
 ) {
+    data class MeasurementLabel(val position: Position, val distance: Float)
+    
     private val anchors = mutableListOf<Anchor>()
     private val nodes = mutableListOf<AnchorNode>()
+    private val segmentDistances = mutableListOf<Float>() // Store each segment distance
+    val labels = mutableListOf<MeasurementLabel>() // 3D positions for labels
 
     // Rubber Banding State
     private var tempLineNode: CylinderNode? = null
     private var lastAnchor: Anchor? = null
+    var currentLivePosition: Position? = null // For live label
+    var currentLiveDistance: Float = 0f
+    private var isMeasuring = true // Track if we're actively measuring
 
     // Call this every frame from MeasureActivity
     fun onUpdate(hitResult: HitResult?) {
+        if (!isMeasuring) return // Stop updating if measurement is done
         val startAnchor = lastAnchor ?: return
         
         // If we have a start point and a valid hit, stretch the line
@@ -39,13 +47,20 @@ class MeasurementManager(
             
             // Calculate distance for UI immediately
             val distance = calculateDistance(startPose, endPose)
+            currentLiveDistance = distance
             onMeasurementChanged(formatDistance(distance))
 
             // Draw/Update the temporary line
             updateTemporaryLine(startPose, endPose)
+            
+            // Store midpoint for label rendering
+            val point1 = Position(startPose.tx(), startPose.ty(), startPose.tz())
+            val point2 = Position(endPose.tx(), endPose.ty(), endPose.tz())
+            currentLivePosition = point1 + ((point2 - point1) * 0.5f)
         } else {
             // If we lost tracking, hide the temp line
             tempLineNode?.isVisible = false
+            currentLivePosition = null
         }
     }
 
@@ -127,8 +142,67 @@ class MeasurementManager(
             quaternion = calculateRotation(difference)
         }
         sceneView.addChildNode(lineNode)
+        
+        // Store segment distance and label position
+        segmentDistances.add(distance)
+        val midpoint = point1 + (difference * 0.5f)
+        labels.add(MeasurementLabel(midpoint, distance))
+        
+        val segmentNum = segmentDistances.size
+        onMeasurementChanged("Segment $segmentNum: ${formatDistance(distance)}")
     }
 
+    fun undo() {
+        if (anchors.isEmpty()) return
+        
+        // Remove last anchor
+        anchors.lastOrNull()?.detach()
+        anchors.removeLastOrNull()
+        
+        // Remove last node (includes line and sphere)
+        nodes.lastOrNull()?.let { node ->
+            sceneView.removeChildNode(node)
+            node.destroy()
+        }
+        nodes.removeLastOrNull()
+        
+        // Remove last segment distance and label
+        segmentDistances.removeLastOrNull()
+        labels.removeLastOrNull()
+        
+        // Update lastAnchor
+        lastAnchor = anchors.lastOrNull()
+        
+        if (anchors.isEmpty()) {
+            onMeasurementChanged("Move to start")
+        } else {
+            onMeasurementChanged("Tap + to continue")
+        }
+    }
+    
+    fun stopMeasuring() {
+        isMeasuring = false
+        // Hide the temp line
+        tempLineNode?.let {
+            sceneView.removeChildNode(it)
+            it.destroy()
+        }
+        tempLineNode = null
+        
+        // Calculate total distance
+        val totalDistance = segmentDistances.sum()
+        
+        // Build summary text with all segments
+        val summary = buildString {
+            appendLine("Total: ${formatDistance(totalDistance)}")
+            segmentDistances.forEachIndexed { index, distance ->
+                append("Seg ${index + 1}: ${formatDistance(distance)}")
+                if (index < segmentDistances.size - 1) append(" | ")
+            }
+        }
+        onMeasurementChanged(summary)
+    }
+    
     fun clear() {
         // Remove all anchors
         anchors.forEach { it.detach() }
@@ -148,8 +222,12 @@ class MeasurementManager(
         }
         tempLineNode = null
         lastAnchor = null
+        segmentDistances.clear()
+        labels.clear()
+        currentLivePosition = null
+        isMeasuring = true
         
-        onMeasurementChanged("Tap + to start")
+        onMeasurementChanged("Move to start")
     }
 
     // --- Math Helpers ---

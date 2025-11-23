@@ -26,8 +26,11 @@ class MeasureActivity : AppCompatActivity() {
     private val CAMERA_PERMISSION_CODE = 1001
 
     private lateinit var sceneView: ARSceneView
-    private lateinit var distanceText: TextView
+    private lateinit var measurementOverlay: MeasurementOverlay
+    private lateinit var promptText: TextView
     private lateinit var addButton: Button
+    private lateinit var doneButton: Button
+    private lateinit var undoButton: Button
     private lateinit var clearButton: Button
     private lateinit var centerReticle: android.widget.ImageView
 
@@ -45,18 +48,25 @@ class MeasureActivity : AppCompatActivity() {
         sceneView = findViewById(R.id.scene_view)
         // Connect lifecycle
         sceneView.lifecycle = this.lifecycle
-
-        distanceText = findViewById(R.id.distance_text)
+        
+        measurementOverlay = findViewById(R.id.measurement_overlay)
+        promptText = findViewById(R.id.prompt_text)
         addButton = findViewById(R.id.add_button)
+        doneButton = findViewById(R.id.done_button)
+        undoButton = findViewById(R.id.undo_button)
         clearButton = findViewById(R.id.clear_button)
         centerReticle = findViewById(R.id.center_reticle)
 
         measurementManager = MeasurementManager(this, sceneView) { measurementText ->
             runOnUiThread {
-                distanceText.text = measurementText
+                promptText.text = measurementText
             }
         }
-        distanceText.text = getString(R.string.measurement_hint)
+        
+        // Connect overlay to manager
+        measurementOverlay.measurementManager = measurementManager
+        
+        promptText.text = "Move to start"
 
         // Check Camera Permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -122,6 +132,10 @@ class MeasureActivity : AppCompatActivity() {
                 // 2. UPDATE THE MANAGER - This draws the dynamic rubber band line!
                 measurementManager.onUpdate(validHitResult)
                 
+                // 2b. Update overlay for 3D label rendering
+                measurementOverlay.arCamera = camera
+                measurementOverlay.postInvalidate()
+                
                 // 3. Update UI Reticle
                 runOnUiThread {
                     if (validHitResult != null) {
@@ -139,6 +153,7 @@ class MeasureActivity : AppCompatActivity() {
                     centerReticle.setColorFilter(android.graphics.Color.GRAY)
                     addButton.isEnabled = false
                     addButton.alpha = 0.3f
+                    promptText.text = "Move to start"
                 }
             }
         }
@@ -147,10 +162,28 @@ class MeasureActivity : AppCompatActivity() {
         addButton.setOnClickListener {
             addPoint()
         }
+        
+        undoButton.setOnClickListener {
+            measurementManager.undo()
+            measurementOverlay.postInvalidate()
+            if (measurementManager.labels.isEmpty()) {
+                doneButton.visibility = android.view.View.GONE
+            }
+        }
+        
+        doneButton.setOnClickListener {
+            measurementManager.stopMeasuring()
+            doneButton.visibility = android.view.View.GONE
+            addButton.visibility = android.view.View.GONE
+            measurementOverlay.postInvalidate()
+        }
 
         clearButton.setOnClickListener {
             measurementManager.clear()
-            distanceText.text = getString(R.string.measurement_hint)
+            promptText.text = "Move to start"
+            doneButton.visibility = android.view.View.GONE
+            addButton.visibility = android.view.View.VISIBLE
+            measurementOverlay.postInvalidate()
         }
     }
 
@@ -173,6 +206,12 @@ class MeasureActivity : AppCompatActivity() {
         if (hitResult != null) {
             val anchor = hitResult.createAnchor()
             measurementManager.addPoint(anchor)
+            measurementOverlay.postInvalidate()
+            
+            // Show Done button after first segment
+            if (doneButton.visibility == android.view.View.GONE) {
+                doneButton.visibility = android.view.View.VISIBLE
+            }
         } else {
             Toast.makeText(this, "No surface detected. Move phone to find a surface.", Toast.LENGTH_SHORT).show()
         }
