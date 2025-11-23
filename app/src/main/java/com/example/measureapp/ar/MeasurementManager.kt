@@ -138,13 +138,19 @@ class MeasurementManager(
         val point2 = Position(endPose.tx(), endPose.ty(), endPose.tz())
         val difference = point2 - point1
         val distance = length(difference)
+        
+        if (distance < 0.001f) return // Too short to render
 
         if (tempLineNode == null) {
+            // Create bright yellow/gold material for visibility
+            val yellowMaterial = sceneView.materialLoader.createColorInstance(
+                android.graphics.Color.rgb(255, 215, 0) // Bright gold
+            )
             tempLineNode = CylinderNode(
                 engine = sceneView.engine,
-                radius = 0.01f, // Increased from 0.005f for better visibility
+                radius = 0.008f,
                 height = 1.0f,
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.YELLOW) // Temp line is Yellow
+                materialInstance = yellowMaterial
             ).apply {
                 isShadowCaster = false
                 isShadowReceiver = false
@@ -154,11 +160,11 @@ class MeasurementManager(
 
         tempLineNode?.apply {
             isVisible = true
-            // Position is midpoint
+            // Position at midpoint
             position = point1 + (difference * 0.5f)
-            // Scale Y (height) to match distance
+            // Scale Y-axis (cylinder height) to match distance
             scale = Float3(1.0f, distance, 1.0f) 
-            // Rotate to look at point 2
+            // Rotate cylinder to point from start to end
             quaternion = calculateRotation(difference)
         }
     }
