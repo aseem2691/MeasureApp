@@ -86,8 +86,14 @@ class MeasureActivity : AppCompatActivity() {
             // CRITICAL for S25+: AUTO focus is essential for feature tracking
             config.focusMode = Config.FocusMode.AUTO
             
-            // Disable depth - rely on plane detection for stability
-            config.depthMode = Config.DepthMode.DISABLED
+            // Enable Depth API for better edge detection on S25+ ToF sensor
+            if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                config.depthMode = Config.DepthMode.AUTOMATIC
+                Log.d(TAG, "Depth mode enabled: AUTOMATIC")
+            } else {
+                config.depthMode = Config.DepthMode.DISABLED
+                Log.d(TAG, "Depth mode not supported, using DISABLED")
+            }
         }
         
         // Enable plane visualization for better surface detection feedback
@@ -113,17 +119,55 @@ class MeasureActivity : AppCompatActivity() {
                 val centerX = sceneView.width / 2f
                 val centerY = sceneView.height / 2f
                 
-                // 1. Perform Hit Test with proper filtering
-                // Take the first hit that has a tracked trackable (Plane or Point)
+                // 1. Perform Hit Test with EDGE DETECTION priority
+                // Priority: Plane (inside) > DepthPoint (edges!) > Point > Plane (outside)
                 val hits = frame.hitTest(centerX, centerY)
                 
-                val hitResult = hits.firstOrNull { hit ->
+                // Log what we're seeing for debugging
+                if (hits.isNotEmpty()) {
+                    val types = hits.map { hit ->
+                        when (hit.trackable) {
+                            is com.google.ar.core.Plane -> "Plane"
+                            is com.google.ar.core.DepthPoint -> "DepthPoint"
+                            is com.google.ar.core.Point -> "Point"
+                            else -> "Unknown"
+                        }
+                    }.distinct()
+                    Log.d(TAG, "Hit types available: ${types.joinToString()}")
+                }
+                
+                var hitResult = hits.firstOrNull { hit ->
                     val trackable = hit.trackable
-                    (trackable is com.google.ar.core.Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
-                    (trackable is com.google.ar.core.Point && 
-                     trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL) ||
-                    // Fallback: Allow any Plane hit even outside polygon (for edges)
-                    (trackable is com.google.ar.core.Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING)
+                    trackable is com.google.ar.core.Plane && trackable.isPoseInPolygon(hit.hitPose)
+                }
+                if (hitResult != null) Log.d(TAG, "Using Plane (inside polygon)")
+                
+                // CRITICAL FOR EDGES: DepthPoint works where Plane polygons end
+                if (hitResult == null) {
+                    hitResult = hits.firstOrNull { hit ->
+                        hit.trackable is com.google.ar.core.DepthPoint
+                    }
+                    if (hitResult != null) Log.d(TAG, "Using DepthPoint for edge")
+                }
+                
+                // Fallback to oriented surface points
+                if (hitResult == null) {
+                    hitResult = hits.firstOrNull { hit ->
+                        val trackable = hit.trackable
+                        trackable is com.google.ar.core.Point && 
+                        trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                    }
+                    if (hitResult != null) Log.d(TAG, "Using Point (surface normal)")
+                }
+                
+                // Last resort: Any tracked plane (even outside polygon boundary)
+                if (hitResult == null) {
+                    hitResult = hits.firstOrNull { hit ->
+                        val trackable = hit.trackable
+                        trackable is com.google.ar.core.Plane && 
+                        trackable.trackingState == com.google.ar.core.TrackingState.TRACKING
+                    }
+                    if (hitResult != null) Log.d(TAG, "Using Plane (outside polygon - edge detection)")
                 }
                 
                 // Validate distance from camera (max 5m for better range)
@@ -146,21 +190,35 @@ class MeasureActivity : AppCompatActivity() {
                 measurementOverlay.arCamera = camera
                 measurementOverlay.postInvalidate()
                 
-                // 3. Update UI Reticle
+                // 3. Update UI Reticle with snap detection
                 runOnUiThread {
+                    // Check if we're snapped to a corner by looking at the prompt text
+                    val isSnapped = promptText.text.contains("[Snapped]")
+                    
                     if (validHitResult != null) {
-                        // GREEN reticle = Surface detected, safe to measure!
-                        centerReticle.setColorFilter(android.graphics.Color.GREEN)
+                        if (isSnapped) {
+                            // BRIGHT GREEN + Enlarged = Snapped to existing corner!
+                            centerReticle.setColorFilter(android.graphics.Color.rgb(0, 255, 0))
+                            centerReticle.scaleX = 1.3f
+                            centerReticle.scaleY = 1.3f
+                        } else {
+                            // GREEN reticle = Surface detected, safe to measure!
+                            centerReticle.setColorFilter(android.graphics.Color.GREEN)
+                            centerReticle.scaleX = 1.0f
+                            centerReticle.scaleY = 1.0f
+                        }
                         addButton.isEnabled = true
                         addButton.alpha = 1.0f
                         
                         // Update prompt only if not currently measuring
                         if (!measurementManager.hasStartedMeasurement) {
-                            promptText.text = "Tap + to start"
+                            promptText.text = if (isSnapped) "Tap + to snap" else "Tap + to start"
                         }
                     } else {
                         // WHITE reticle = Searching for surface
                         centerReticle.setColorFilter(android.graphics.Color.WHITE)
+                        centerReticle.scaleX = 1.0f
+                        centerReticle.scaleY = 1.0f
                         addButton.isEnabled = true 
                         addButton.alpha = 0.5f
                         

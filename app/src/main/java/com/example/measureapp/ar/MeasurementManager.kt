@@ -26,10 +26,12 @@ class MeasurementManager(
     
     private val anchors = mutableListOf<Anchor>()
     private val nodes = mutableListOf<AnchorNode>()
+    private val cornerNodes = mutableListOf<AnchorNode>() // Track corner nodes for snapping
     private val segmentDistances = mutableListOf<Float>() // Store each segment distance
     val labels = mutableListOf<MeasurementLabel>() // 3D positions for labels
     private val measurementChains = mutableListOf<MeasurementChain>() // Track separate measurement chains
     private var currentChain = MeasurementChain()
+    private var snappedAnchor: Anchor? = null // Track if we're snapped to an existing anchor
 
     // Rubber Banding State
     private var tempLineNode: CylinderNode? = null
@@ -47,12 +49,29 @@ class MeasurementManager(
         // If we have a start point and a valid hit, stretch the line
         if (hitResult != null) {
             val startPose = startAnchor.pose
-            val endPose = hitResult.hitPose
+            var endPose = hitResult.hitPose
+            
+            // Check for corner snapping
+            val nearbyCorner = findNearestCorner(endPose)
+            if (nearbyCorner != null) {
+                // Snap to existing corner
+                snappedAnchor = nearbyCorner.anchor
+                endPose = nearbyCorner.anchor.pose
+                highlightNode(nearbyCorner, true)
+            } else {
+                snappedAnchor = null
+                resetHighlights()
+            }
             
             // Calculate distance for UI immediately
             val distance = calculateDistance(startPose, endPose)
             currentLiveDistance = distance
-            onMeasurementChanged(formatDistance(distance))
+            val statusText = if (snappedAnchor != null) {
+                "${formatDistance(distance)} [Snapped]"
+            } else {
+                formatDistance(distance)
+            }
+            onMeasurementChanged(statusText)
 
             // Draw/Update the temporary line
             updateTemporaryLine(startPose, endPose)
@@ -65,18 +84,25 @@ class MeasurementManager(
             // If we lost tracking, hide the temp line
             tempLineNode?.isVisible = false
             currentLivePosition = null
+            snappedAnchor = null
+            resetHighlights()
         }
     }
 
     fun addPoint(anchor: Anchor, isExistingAnchor: Boolean = false) {
-        anchors.add(anchor)
+        // Use snapped anchor if we detected one during onUpdate
+        val finalAnchor = snappedAnchor ?: anchor
+        val shouldRenderSphere = !isExistingAnchor && snappedAnchor == null
+        
+        anchors.add(finalAnchor)
         hasStartedMeasurement = true
         
         // 1. Render the corner point (Sphere) only if it's a new anchor
-        if (!isExistingAnchor) {
-            val anchorNode = AnchorNode(sceneView.engine, anchor)
+        if (shouldRenderSphere) {
+            val anchorNode = AnchorNode(sceneView.engine, finalAnchor)
             sceneView.addChildNode(anchorNode)
             nodes.add(anchorNode)
+            cornerNodes.add(anchorNode) // Track for snapping
             
             SphereNode(
                 engine = sceneView.engine,
@@ -91,16 +117,20 @@ class MeasurementManager(
         if (lastAnchor != null) {
             // We just finished a segment. Make the temp line permanent.
             val startPose = lastAnchor!!.pose
-            val endPose = anchor.pose
+            val endPose = finalAnchor.pose
             createPermanentLine(startPose, endPose)
             
             // "Polyline" logic: The end of this line becomes the start of the next
-            lastAnchor = anchor
+            lastAnchor = finalAnchor
         } else {
             // This is the very first point
-            lastAnchor = anchor
+            lastAnchor = finalAnchor
             onMeasurementChanged("Move to end point")
         }
+        
+        // Reset snapped state after adding point
+        snappedAnchor = null
+        resetHighlights()
     }
 
     private fun updateTemporaryLine(startPose: Pose, endPose: Pose) {
@@ -112,11 +142,12 @@ class MeasurementManager(
         if (tempLineNode == null) {
             tempLineNode = CylinderNode(
                 engine = sceneView.engine,
-                radius = 0.005f,
+                radius = 0.01f, // Increased from 0.005f for better visibility
                 height = 1.0f,
                 materialInstance = sceneView.materialLoader.createColorInstance(Color.YELLOW) // Temp line is Yellow
             ).apply {
-                parent = null
+                isShadowCaster = false
+                isShadowReceiver = false
             }
             sceneView.addChildNode(tempLineNode!!)
         }
@@ -125,7 +156,7 @@ class MeasurementManager(
             isVisible = true
             // Position is midpoint
             position = point1 + (difference * 0.5f)
-            // Scale Z to match distance
+            // Scale Y (height) to match distance
             scale = Float3(1.0f, distance, 1.0f) 
             // Rotate to look at point 2
             quaternion = calculateRotation(difference)
@@ -140,13 +171,15 @@ class MeasurementManager(
 
         val lineNode = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.005f,
+            radius = 0.01f, // Increased from 0.005f for better visibility
             height = 1.0f,
             materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Permanent line is White
         ).apply {
             position = point1 + (difference * 0.5f)
             scale = Float3(1.0f, distance, 1.0f)
             quaternion = calculateRotation(difference)
+            isShadowCaster = false
+            isShadowReceiver = false
         }
         sceneView.addChildNode(lineNode)
         
@@ -162,6 +195,41 @@ class MeasurementManager(
             onMeasurementChanged("${formatDistance(distance)}")
         } else {
             onMeasurementChanged("Total: ${formatDistance(currentChainTotal)} (${currentChain.segments.size} segments)")
+        }
+    }
+
+    private fun findNearestCorner(hitPose: Pose): AnchorNode? {
+        val snapDistance = 0.05f // 5cm threshold
+        val hitPos = Position(hitPose.tx(), hitPose.ty(), hitPose.tz())
+        
+        return cornerNodes
+            .filter { it.anchor != null }
+            .minByOrNull { node ->
+                val nodePos = node.worldPosition
+                length(nodePos - hitPos)
+            }
+            ?.takeIf { node ->
+                val nodePos = node.worldPosition
+                length(nodePos - hitPos) <= snapDistance
+            }
+    }
+    
+    private fun highlightNode(node: AnchorNode, active: Boolean) {
+        val sphere = node.childNodes.firstOrNull() as? SphereNode
+        if (active) {
+            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.GREEN)
+            sphere?.scale = Float3(1.5f, 1.5f, 1.5f)
+        } else {
+            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
+            sphere?.scale = Float3(1.0f, 1.0f, 1.0f)
+        }
+    }
+    
+    private fun resetHighlights() {
+        cornerNodes.forEach { node ->
+            val sphere = node.childNodes.firstOrNull() as? SphereNode
+            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
+            sphere?.scale = Float3(1.0f, 1.0f, 1.0f)
         }
     }
 
@@ -263,6 +331,7 @@ class MeasurementManager(
             node.destroy()
         }
         nodes.clear()
+        cornerNodes.clear()
         
         // Clear temp line
         tempLineNode?.let {
@@ -278,6 +347,7 @@ class MeasurementManager(
         currentChain = MeasurementChain()
         isMeasuring = true
         hasStartedMeasurement = false
+        snappedAnchor = null
         
         onMeasurementChanged("Point at surface and tap + to start")
     }
