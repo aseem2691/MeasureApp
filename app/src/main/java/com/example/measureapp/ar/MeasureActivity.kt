@@ -63,20 +63,19 @@ class MeasureActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_CODE)
         }
 
-        // Configure AR Scene
+        // Configure AR Scene - SIMPLIFIED like ARCoreMeasure (uses defaults!)
         sceneView.configureSession { session, config ->
-            // Enable both Horizontal and Vertical planes (like StreetMeasure/iOS)
-            config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-            config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
+            // HORIZONTAL only - most stable for floor measurements
+            config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
+            config.instantPlacementMode = Config.InstantPlacementMode.DISABLED
             config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-            config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+            config.lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
             config.focusMode = Config.FocusMode.AUTO
-            // Depth mode can help with occlusion but might be unstable on some devices. 
-            // Keeping it disabled for now as per StreetMeasure, but enabling Vertical planes is key.
-            config.depthMode = Config.DepthMode.DISABLED 
+            // CRITICAL: Disable depth like StreetMeasure - rely on plane detection!
+            config.depthMode = Config.DepthMode.DISABLED
         }
         
-        // Ensure plane renderer is visible
+        // Enable plane visualization
         sceneView.planeRenderer.isEnabled = true
         sceneView.planeRenderer.isVisible = true
 
@@ -85,38 +84,62 @@ class MeasureActivity : AppCompatActivity() {
             Toast.makeText(this, "AR Session failed: ${exception.message}", Toast.LENGTH_LONG).show()
         }
         
-        // Continuous Hit Testing for Reticle
+        // Continuous Hit Testing - exactly like ARCoreMeasure & StreetMeasure
         sceneView.onSessionUpdated = { session, frame ->
             val camera = frame.camera
             if (camera.trackingState == com.google.ar.core.TrackingState.TRACKING) {
                 val centerX = sceneView.width / 2f
                 val centerY = sceneView.height / 2f
                 
+                // CRITICAL: Use isPoseInPolygon check like ARCoreMeasure
                 val hitResult = frame.hitTest(centerX, centerY).firstOrNull { hit ->
                     val trackable = hit.trackable
                     when (trackable) {
-                        is com.google.ar.core.Plane -> trackable.isPoseInPolygon(hit.hitPose)
-                        // Also allow Point hits (Feature Points) for better coverage like ARCoreMeasure
-                        is com.google.ar.core.Point -> trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                        is com.google.ar.core.Plane -> {
+                            // Must be inside the plane polygon!
+                            trackable.isPoseInPolygon(hit.hitPose) && 
+                            trackable.type == com.google.ar.core.Plane.Type.HORIZONTAL_UPWARD_FACING
+                        }
+                        is com.google.ar.core.Point -> {
+                            // Allow feature points with estimated normals
+                            trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                        }
                         else -> false
                     }
                 }
                 
-                lastHitResult = hitResult
+                // Validate distance from camera (like StreetMeasure - max 3m)
+                val validHitResult = hitResult?.let { hit ->
+                    val hitPose = hit.hitPose
+                    val cameraPose = camera.pose
+                    val dx = hitPose.tx() - cameraPose.tx()
+                    val dy = hitPose.ty() - cameraPose.ty()
+                    val dz = hitPose.tz() - cameraPose.tz()
+                    val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+                    if (distance <= 3.0f) hit else null
+                }
+                
+                lastHitResult = validHitResult
                 
                 runOnUiThread {
-                    if (hitResult != null) {
-                        // Valid surface detected - Green
+                    if (validHitResult != null) {
+                        // Valid surface detected - Green reticle
                         centerReticle.setColorFilter(android.graphics.Color.GREEN)
                         addButton.isEnabled = true
                         addButton.alpha = 1.0f
                     } else {
-                        // No surface - White/Gray
+                        // No surface or too far - White reticle
                         centerReticle.setColorFilter(android.graphics.Color.WHITE)
-                        // Optional: Disable button or just keep it white
                         addButton.isEnabled = true 
                         addButton.alpha = 0.5f
                     }
+                }
+            } else {
+                // Camera not tracking - show white reticle
+                runOnUiThread {
+                    centerReticle.setColorFilter(android.graphics.Color.GRAY)
+                    addButton.isEnabled = false
+                    addButton.alpha = 0.3f
                 }
             }
         }

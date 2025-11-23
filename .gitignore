@@ -1,15 +1,123 @@
+########################################
+# Kotlin Multiplatform (KMP)
+########################################
+
+# Gradle build output
+build/
+**/build/
+out/
+.gradle/
+
+# IDE & metadata
+.idea/
+.idea/*
 *.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+*.ipr
+*.iws
+
+# Local configuration (SDK paths, keys)
 local.properties
+keystore.properties
+
+# Kotlin/Native build output
+*.klib
+*.kexe
+*.kotlin_metadata
+*.node
+.kotlinc/
+
+# Kotlin/Native caches
+.konan/
+
+########################################
+# Android
+########################################
+
+# Android build artifacts
+*.apk
+*.aab
+captures/
+output.json
+
+# Generated files
+bin/
+gen/
+
+# Android Studio specific
+.navigation/
+*.cxx/
+
+########################################
+# iOS
+########################################
+
+# Xcode
+*.xcworkspace
+*.xcuserdata/
+*.xccheckout
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/xcshareddata/
+*.DS_Store
+
+# iOS build output
+DerivedData/
+build/
+*.ipa
+
+########################################
+# JavaScript / Web target
+########################################
+
+# Node
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+package-lock.json
+.pnpm-store/
+
+# JS / Web build outputs
+dist/
+build/
+
+########################################
+# Desktop (JVM / Compose Desktop)
+########################################
+
+# Compose artifacts
+*.log
+*.jar
+*.war
+
+########################################
+# Common OS/Tooling
+########################################
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+########################################
+# Security
+########################################
+
+# Keystores & signing files
+*.jks
+*.keystore
+
+# Keys, certs, secrets
+*.key
+*.pem
+*.p12
+secrets.properties
+.env
+.env.*
