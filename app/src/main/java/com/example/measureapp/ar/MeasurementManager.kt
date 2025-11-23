@@ -155,9 +155,10 @@ class MeasurementManager(
     }
 
     fun finishCurrentMeasurement() {
-        // Stop rubber banding by clearing lastAnchor
+        // Break the chain - allows starting a NEW separate measurement
         lastAnchor = null
-        isMeasuring = false
+        isMeasuring = true // Keep measuring mode ON for next measurement
+        hasStartedMeasurement = false // Reset for next measurement
         
         // Remove the temporary line
         tempLineNode?.let {
@@ -167,7 +168,7 @@ class MeasurementManager(
         tempLineNode = null
         currentLivePosition = null
         
-        // Show summary
+        // Show summary of all measurements
         if (segmentDistances.isNotEmpty()) {
             val totalDistance = segmentDistances.sum()
             val summary = buildString {
@@ -180,9 +181,9 @@ class MeasurementManager(
                     }
                 }
             }
-            onMeasurementChanged(summary)
+            onMeasurementChanged("$summary\nTap + for new measurement")
         } else {
-            onMeasurementChanged("Measurement complete")
+            onMeasurementChanged("Tap + to start new measurement")
         }
     }
     
@@ -244,7 +245,7 @@ class MeasurementManager(
         isMeasuring = true
         hasStartedMeasurement = false
         
-        onMeasurementChanged("Move to start")
+        onMeasurementChanged("Point at surface and tap + to start")
     }
 
     // --- Math Helpers ---

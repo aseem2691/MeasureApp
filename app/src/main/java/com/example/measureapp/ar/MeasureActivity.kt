@@ -73,15 +73,20 @@ class MeasureActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_CODE)
         }
 
-        // Configure AR Scene - SIMPLIFIED like ARCoreMeasure (uses defaults!)
+        // Configure AR Scene - Optimized for S25+ surface detection
         sceneView.configureSession { session, config ->
-            // HORIZONTAL only - most stable for floor measurements
-            config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
+            // CRITICAL: Enable both horizontal AND vertical for better detection
+            config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
             config.instantPlacementMode = Config.InstantPlacementMode.DISABLED
             config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-            config.lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
+            
+            // Better lighting estimation for indoor/outdoor
+            config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+            
+            // CRITICAL for S25+: AUTO focus is essential for feature tracking
             config.focusMode = Config.FocusMode.AUTO
-            // CRITICAL: Disable depth like StreetMeasure - rely on plane detection!
+            
+            // Disable depth - rely on plane detection for stability
             config.depthMode = Config.DepthMode.DISABLED
         }
         
@@ -89,9 +94,12 @@ class MeasureActivity : AppCompatActivity() {
         sceneView.planeRenderer.apply {
             isEnabled = true
             isVisible = true
-            // Make planes more visible (like ARuler)
+            // Make planes more visible - white dots show detected surfaces
             isShadowReceiver = false
         }
+        
+        // Initial prompt
+        promptText.text = "Move phone to detect surface"
 
         sceneView.onSessionFailed = { exception ->
             Log.e(TAG, "AR Session failed", exception)
@@ -143,21 +151,36 @@ class MeasureActivity : AppCompatActivity() {
                 // 3. Update UI Reticle
                 runOnUiThread {
                     if (validHitResult != null) {
+                        // GREEN reticle = Surface detected, safe to measure!
                         centerReticle.setColorFilter(android.graphics.Color.GREEN)
                         addButton.isEnabled = true
                         addButton.alpha = 1.0f
+                        
+                        // Update prompt only if not currently measuring
+                        if (!measurementManager.hasStartedMeasurement) {
+                            promptText.text = "Tap + to start"
+                        }
                     } else {
+                        // WHITE reticle = Searching for surface
                         centerReticle.setColorFilter(android.graphics.Color.WHITE)
                         addButton.isEnabled = true 
                         addButton.alpha = 0.5f
+                        
+                        if (!measurementManager.hasStartedMeasurement) {
+                            promptText.text = "Move phone to detect surface"
+                        }
                     }
                 }
             } else {
                 runOnUiThread {
+                    // GRAY reticle = Tracking lost
                     centerReticle.setColorFilter(android.graphics.Color.GRAY)
                     addButton.isEnabled = false
                     addButton.alpha = 0.3f
-                    promptText.text = "Move to start"
+                    
+                    if (!measurementManager.hasStartedMeasurement) {
+                        promptText.text = "Move phone slowly to detect surface"
+                    }
                 }
             }
         }
@@ -180,18 +203,20 @@ class MeasureActivity : AppCompatActivity() {
         doneButton.setOnClickListener {
             if (measurementManager.hasStartedMeasurement) {
                 measurementManager.finishCurrentMeasurement()
+                // Hide Done button, allow starting new measurement
+                doneButton.visibility = android.view.View.GONE
                 doneButton.isEnabled = false
                 doneButton.alpha = 0.5f
-                addButton.isEnabled = false
-                addButton.alpha = 0.5f
+                // Keep add button enabled for next measurement
+                addButton.isEnabled = true
+                addButton.alpha = 1.0f
                 measurementOverlay.postInvalidate()
-                promptText.text = "Measurement complete. Tap Clear to start new."
             }
         }
 
         clearButton.setOnClickListener {
             measurementManager.clear()
-            promptText.text = "Move to start"
+            promptText.text = "Move phone to detect surface"
             doneButton.visibility = android.view.View.GONE
             doneButton.isEnabled = false
             doneButton.alpha = 0.5f
