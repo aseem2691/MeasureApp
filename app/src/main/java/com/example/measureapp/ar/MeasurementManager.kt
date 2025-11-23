@@ -3,6 +3,7 @@ package com.example.measureapp.ar
 import android.content.Context
 import android.graphics.Color
 import com.google.ar.core.Anchor
+import com.google.ar.core.HitResult
 import com.google.ar.core.Pose
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
@@ -22,115 +23,144 @@ class MeasurementManager(
 ) {
     private val anchors = mutableListOf<Anchor>()
     private val nodes = mutableListOf<AnchorNode>()
-    private val lineNodes = mutableListOf<AnchorNode>()
-    private val distances = mutableListOf<Float>()
+
+    // Rubber Banding State
+    private var tempLineNode: CylinderNode? = null
+    private var lastAnchor: Anchor? = null
+
+    // Call this every frame from MeasureActivity
+    fun onUpdate(hitResult: HitResult?) {
+        val startAnchor = lastAnchor ?: return
+        
+        // If we have a start point and a valid hit, stretch the line
+        if (hitResult != null) {
+            val startPose = startAnchor.pose
+            val endPose = hitResult.hitPose
+            
+            // Calculate distance for UI immediately
+            val distance = calculateDistance(startPose, endPose)
+            onMeasurementChanged(formatDistance(distance))
+
+            // Draw/Update the temporary line
+            updateTemporaryLine(startPose, endPose)
+        } else {
+            // If we lost tracking, hide the temp line
+            tempLineNode?.isVisible = false
+        }
+    }
 
     fun addPoint(anchor: Anchor) {
         anchors.add(anchor)
-
-        // Create a visual node for the anchor (Sphere)
+        
+        // 1. Render the corner point (Sphere)
         val anchorNode = AnchorNode(sceneView.engine, anchor)
-        (sceneView.childNodes as MutableList<io.github.sceneview.node.Node>).add(anchorNode)
+        sceneView.addChildNode(anchorNode)
         nodes.add(anchorNode)
-
-        // Visual representation of the point
+        
         SphereNode(
             engine = sceneView.engine,
-            radius = 0.01f, // 1cm radius
-            materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE)
+            radius = 0.015f, // 1.5cm
+            materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
         ).apply {
             parent = anchorNode
         }
 
-        // If we have at least 2 points, draw a line between the last two
-        if (anchors.size >= 2) {
-            val prevAnchor = anchors[anchors.size - 2]
-            val currentAnchor = anchors[anchors.size - 1]
-            drawLine(prevAnchor, currentAnchor)
+        // 2. Handle Measurement Logic
+        if (lastAnchor != null) {
+            // We just finished a segment. Make the temp line permanent.
+            val startPose = lastAnchor!!.pose
+            val endPose = anchor.pose
+            createPermanentLine(startPose, endPose)
+            
+            // "Polyline" logic: The end of this line becomes the start of the next
+            lastAnchor = anchor
         } else {
-            onMeasurementChanged("Start Point Placed")
+            // This is the very first point
+            lastAnchor = anchor
+            onMeasurementChanged("Move to end point")
         }
     }
 
-    private fun drawLine(anchor1: Anchor, anchor2: Anchor) {
-        val pose1 = anchor1.pose
-        val pose2 = anchor2.pose
-
-        val point1 = Position(pose1.tx(), pose1.ty(), pose1.tz())
-        val point2 = Position(pose2.tx(), pose2.ty(), pose2.tz())
-
-        // Calculate distance
-        val distance = calculateDistance(pose1, pose2)
-        distances.add(distance)
-        
-        updateMeasurementText()
-
-        // Create a node that will hold the line. 
-        val lineNode = AnchorNode(sceneView.engine, anchor1)
-        (sceneView.childNodes as MutableList<io.github.sceneview.node.Node>).add(lineNode)
-        lineNodes.add(lineNode)
-
-        // We need to calculate the local position of point2 relative to point1
+    private fun updateTemporaryLine(startPose: Pose, endPose: Pose) {
+        val point1 = Position(startPose.tx(), startPose.ty(), startPose.tz())
+        val point2 = Position(endPose.tx(), endPose.ty(), endPose.tz())
         val difference = point2 - point1
-        val direction = normalize(difference)
-        
-        // Rotation to align Y axis (default cylinder axis) with the direction vector
-        val up = Float3(0f, 1f, 0f)
-        val rotationAxis = normalize(cross(up, direction))
-        val rotationAngle = acos(dot(up, direction))
-        
-        val rotation = Quaternion.fromAxisAngle(rotationAxis, Math.toDegrees(rotationAngle.toDouble()).toFloat())
+        val distance = length(difference)
 
-        // Create the cylinder
-        CylinderNode(
-            engine = sceneView.engine,
-            radius = 0.005f, // 5mm thickness
-            height = distance,
-            materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE)
-        ).apply {
-            parent = lineNode
-            position = difference * 0.5f
-            this.quaternion = rotation
+        if (tempLineNode == null) {
+            tempLineNode = CylinderNode(
+                engine = sceneView.engine,
+                radius = 0.005f,
+                height = 1.0f,
+                materialInstance = sceneView.materialLoader.createColorInstance(Color.YELLOW) // Temp line is Yellow
+            ).apply {
+                parent = null
+            }
+            sceneView.addChildNode(tempLineNode!!)
+        }
+
+        tempLineNode?.apply {
+            isVisible = true
+            // Position is midpoint
+            position = point1 + (difference * 0.5f)
+            // Scale Z to match distance
+            scale = Float3(1.0f, distance, 1.0f) 
+            // Rotate to look at point 2
+            quaternion = calculateRotation(difference)
         }
     }
 
-    private fun updateMeasurementText() {
-        val sb = StringBuilder()
-        var total = 0f
-        
-        for (i in distances.indices) {
-            val d = distances[i] * 100 // cm
-            total += d
-            if (i > 0) sb.append(" + ")
-            sb.append(String.format("%.1f", d))
+    private fun createPermanentLine(startPose: Pose, endPose: Pose) {
+        val point1 = Position(startPose.tx(), startPose.ty(), startPose.tz())
+        val point2 = Position(endPose.tx(), endPose.ty(), endPose.tz())
+        val difference = point2 - point1
+        val distance = length(difference)
+
+        val lineNode = CylinderNode(
+            engine = sceneView.engine,
+            radius = 0.005f,
+            height = 1.0f,
+            materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Permanent line is White
+        ).apply {
+            position = point1 + (difference * 0.5f)
+            scale = Float3(1.0f, distance, 1.0f)
+            quaternion = calculateRotation(difference)
         }
-        
-        if (distances.size > 1) {
-            sb.append(" = ").append(String.format("%.1f", total)).append(" cm")
-        } else if (distances.isNotEmpty()) {
-             sb.append(" cm")
-        }
-        
-        onMeasurementChanged(sb.toString())
+        sceneView.addChildNode(lineNode)
     }
 
     fun clear() {
-        val children = sceneView.childNodes as MutableList<io.github.sceneview.node.Node>
-        for (node in nodes) {
+        // Remove all anchors
+        anchors.forEach { it.detach() }
+        anchors.clear()
+        
+        // Remove all nodes from scene
+        nodes.forEach { node ->
+            sceneView.removeChildNode(node)
             node.destroy()
-            children.remove(node)
-        }
-        for (node in lineNodes) {
-            node.destroy()
-            children.remove(node)
-        }
-        for (anchor in anchors) {
-            anchor.detach()
         }
         nodes.clear()
-        lineNodes.clear()
-        anchors.clear()
-        distances.clear()
+        
+        // Clear temp line
+        tempLineNode?.let {
+            sceneView.removeChildNode(it)
+            it.destroy()
+        }
+        tempLineNode = null
+        lastAnchor = null
+        
+        onMeasurementChanged("Tap + to start")
+    }
+
+    // --- Math Helpers ---
+
+    private fun calculateRotation(direction: Float3): Quaternion {
+        // Default Cylinder points UP (Y-axis). We need to rotate Y to align with 'direction'
+        val up = Float3(0f, 1f, 0f)
+        val dirNormalized = normalize(direction)
+        val rotationAxis = normalize(cross(up, dirNormalized))
+        val rotationAngle = acos(dot(up, dirNormalized))
+        return Quaternion.fromAxisAngle(rotationAxis, Math.toDegrees(rotationAngle.toDouble()).toFloat())
     }
 
     private fun calculateDistance(pose1: Pose, pose2: Pose): Float {
@@ -139,17 +169,16 @@ class MeasurementManager(
         val dz = pose1.tz() - pose2.tz()
         return sqrt(dx * dx + dy * dy + dz * dz)
     }
-
-    // Math helpers
-    private fun cross(a: Float3, b: Float3): Float3 {
-        return Float3(
-            a.y * b.z - a.z * b.y,
-            a.z * b.x - a.x * b.z,
-            a.x * b.y - a.y * b.x
-        )
-    }
     
-    private fun dot(a: Float3, b: Float3): Float {
-        return a.x * b.x + a.y * b.y + a.z * b.z
+    private fun formatDistance(meters: Float): String {
+        return if (meters >= 1.0f) {
+            String.format("%.2f m", meters)
+        } else {
+            String.format("%.1f cm", meters * 100)
+        }
     }
+
+    private fun length(v: Float3) = sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    private fun cross(a: Float3, b: Float3) = Float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+    private fun dot(a: Float3, b: Float3) = a.x * b.x + a.y * b.y + a.z * b.z
 }

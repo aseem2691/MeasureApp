@@ -84,31 +84,29 @@ class MeasureActivity : AppCompatActivity() {
             Toast.makeText(this, "AR Session failed: ${exception.message}", Toast.LENGTH_LONG).show()
         }
         
-        // Continuous Hit Testing - exactly like ARCoreMeasure & StreetMeasure
+        // Continuous Hit Testing with Rubber Banding
         sceneView.onSessionUpdated = { session, frame ->
             val camera = frame.camera
             if (camera.trackingState == com.google.ar.core.TrackingState.TRACKING) {
                 val centerX = sceneView.width / 2f
                 val centerY = sceneView.height / 2f
                 
-                // CRITICAL: Use isPoseInPolygon check like ARCoreMeasure
+                // 1. Perform Hit Test
                 val hitResult = frame.hitTest(centerX, centerY).firstOrNull { hit ->
                     val trackable = hit.trackable
                     when (trackable) {
                         is com.google.ar.core.Plane -> {
-                            // Must be inside the plane polygon!
                             trackable.isPoseInPolygon(hit.hitPose) && 
                             trackable.type == com.google.ar.core.Plane.Type.HORIZONTAL_UPWARD_FACING
                         }
                         is com.google.ar.core.Point -> {
-                            // Allow feature points with estimated normals
                             trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
                         }
                         else -> false
                     }
                 }
                 
-                // Validate distance from camera (like StreetMeasure - max 3m)
+                // Validate distance from camera (max 3m)
                 val validHitResult = hitResult?.let { hit ->
                     val hitPose = hit.hitPose
                     val cameraPose = camera.pose
@@ -121,21 +119,22 @@ class MeasureActivity : AppCompatActivity() {
                 
                 lastHitResult = validHitResult
                 
+                // 2. UPDATE THE MANAGER - This draws the dynamic rubber band line!
+                measurementManager.onUpdate(validHitResult)
+                
+                // 3. Update UI Reticle
                 runOnUiThread {
                     if (validHitResult != null) {
-                        // Valid surface detected - Green reticle
                         centerReticle.setColorFilter(android.graphics.Color.GREEN)
                         addButton.isEnabled = true
                         addButton.alpha = 1.0f
                     } else {
-                        // No surface or too far - White reticle
                         centerReticle.setColorFilter(android.graphics.Color.WHITE)
                         addButton.isEnabled = true 
                         addButton.alpha = 0.5f
                     }
                 }
             } else {
-                // Camera not tracking - show white reticle
                 runOnUiThread {
                     centerReticle.setColorFilter(android.graphics.Color.GRAY)
                     addButton.isEnabled = false
