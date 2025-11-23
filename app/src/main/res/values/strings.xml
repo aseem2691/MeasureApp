@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">MeasureApp</string>
+    <string name="measurement_hint">Tap the screen or the + button to place a point</string>
+    <string name="clear_button_label">Clear</string>
+    <string name="add_point_label">Add point</string>
+    <string name="reticle_content_description">Center reticle for aiming</string>
+</resources>

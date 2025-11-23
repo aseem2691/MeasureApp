@@ -1,0 +1,668 @@
+@file:Suppress("DEPRECATION", "SENSELESS_COMPARISON")
+
+package com.example.measureapp.ar
+
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.view.ViewGroup
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.navigation.NavController
+import com.example.measureapp.viewmodel.MeasureUiState
+import com.example.measureapp.viewmodel.MeasureViewModel
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+import com.google.ar.core.Config
+import com.google.ar.core.Session
+import com.google.ar.core.exceptions.CameraNotAvailableException
+
+@OptIn(ExperimentalPermissionsApi::class)
+@Composable
+fun MeasurementScreen(
+    navController: NavController,
+    viewModel: MeasureViewModel = hiltViewModel()
+) {
+    val cameraPermissionState = rememberPermissionState(android.Manifest.permission.CAMERA)
+    
+    LaunchedEffect(cameraPermissionState.status.isGranted) {
+        if (cameraPermissionState.status.isGranted) {
+            viewModel.onPermissionGranted()
+        } else {
+            viewModel.initializeAr()
+        }
+    }
+    
+    if (cameraPermissionState.status.isGranted) {
+        MeasurementScreenContent(
+            navController = navController,
+            viewModel = viewModel
+        )
+    } else {
+        PermissionRequestScreen(
+            onRequestPermission = { cameraPermissionState.launchPermissionRequest() }
+        )
+    }
+}
+
+@Composable
+fun PermissionRequestScreen(onRequestPermission: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "Camera Permission Required",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "This app needs camera access to measure objects using AR",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = onRequestPermission,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("Grant Permission")
+            }
+        }
+    }
+}
+
+@Composable
+fun MeasurementScreenContent(
+    navController: NavController,
+    viewModel: MeasureViewModel
+) {
+    android.util.Log.e("MeasurementScreen", "🚀🚀🚀 MeasurementScreenContent COMPOSING!")
+    
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsState()
+    val measurements by viewModel.measurements.collectAsState()
+    val selectedUnit by viewModel.selectedUnit.collectAsState()
+    val isMeasuring by viewModel.isMeasuring.collectAsState()
+    val livePreviewDistance by viewModel.livePreviewDistance.collectAsState()
+    val vibrator = remember { context.getSystemService(Vibrator::class.java) }
+
+    var arSurfaceView by remember { mutableStateOf<ArSurfaceView?>(null) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    
+    // 🔥 CRITICAL ARCHITECTURAL FIX: Extract session management OUT of Compose
+    // Based on analysis of StreetMeasure, ARCoreMeasure, and labs-ar-ruler:
+    // 1. StreetMeasure: Creates session in Activity.onResume(), NOT in Compose
+    // 2. ARCoreMeasure: Uses AndroidView with GLSurfaceView lifecycle
+    // 3. Both avoid Compose state-driven recomposition issues
+    // 
+    // Solution: Use ArSessionManager (singleton) + DisposableEffect for lifecycle
+    val sessionManager = remember(context) {
+        android.util.Log.i("MeasurementScreen", "✨✨✨ Creating ArSessionManager (ONCE ONLY)")
+        ArSessionManager(context).also {
+            it.createSession()
+        }
+    }
+    
+    // Handle lifecycle events WITHOUT triggering recomposition
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    android.util.Log.i("MeasurementScreen", "📱 ON_RESUME - resuming session")
+                    try {
+                        sessionManager.resume()
+                        viewModel.onArSessionReady()
+                    } catch (e: CameraNotAvailableException) {
+                        android.util.Log.e("MeasurementScreen", "❌ Camera not available", e)
+                        errorMessage = "Camera not available"
+                    }
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    android.util.Log.i("MeasurementScreen", "📱 ON_PAUSE - pausing session")
+                    sessionManager.pause()
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            android.util.Log.i("MeasurementScreen", "📱 DISPOSING - cleaning up")
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            sessionManager.pause()
+        }
+    }
+    
+    // Get session from manager (stable reference, won't change)
+    val arSession = sessionManager.session
+    
+    if (arSession == null) {
+        // Show error if session failed to create
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Failed to initialize AR session",
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        return
+    }
+    
+    // Log session info once
+    LaunchedEffect(Unit) {
+        val camera = arSession.cameraConfig
+        val imageSize = camera.imageSize
+        val textureSize = camera.textureSize
+        
+        android.util.Log.i("MeasurementScreen", 
+            "� Camera Size: Image=${imageSize.width}x${imageSize.height}, " +
+            "Texture=${textureSize.width}x${textureSize.height}")
+        
+        if (imageSize.width < 1920 || textureSize.width < 1920) {
+            android.util.Log.w("MeasurementScreen", 
+                "⚠️ Resolution is ${imageSize.width}x${imageSize.height} - might be telephoto")
+        } else {
+            android.util.Log.i("MeasurementScreen", "✅ Resolution looks good for wide-angle camera")
+        }
+    }
+    
+    // Initialize HitTestManager with session
+    LaunchedEffect(arSession) {
+        android.util.Log.i("MeasurementScreen", "Initializing HitTestManager...")
+        viewModel.initializeHitTestManager(arSession)
+    }
+    
+    // Track current frame for tap handling
+    var currentFrame by remember { mutableStateOf<com.google.ar.core.Frame?>(null) }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // AR Camera View - Show immediately if session created
+        if (arSession != null) {
+            AndroidView(
+                factory = { ctx ->
+                    ArSurfaceView(ctx).apply {
+                        arSurfaceView = this
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        
+                        setupRenderer(
+                            session = arSession!!,
+                            onFrameUpdate = { frame, _ ->
+                                // Store frame for button tap handling
+                                currentFrame = frame
+                                // Update viewmodel with frame data
+                                viewModel.onFrameUpdate(frame)
+                            },
+                            onError = { error ->
+                                errorMessage = error
+                            }
+                        )
+                        
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            
+            // Update measurement points in renderer when they change
+            LaunchedEffect(measurements.size, viewModel.getAllPoints().size) {
+                arSurfaceView?.updateMeasurementPoints(viewModel.getAllPoints())
+            }
+        }
+        
+        // Show loading/error overlay on top if needed
+        if (arSession == null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                if (errorMessage != null) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = errorMessage!!,
+                            color = Color.White,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                        Button(onClick = { 
+                            errorMessage = null
+                            // Trigger recomposition
+                        }) {
+                            Text("Dismiss")
+                        }
+                    }
+                } else {
+                    CircularProgressIndicator(color = Color.White)
+                }
+            }
+        }
+
+        // Crosshair/Reticle - Show when AR session is ready
+        if (arSession != null) {
+            SmartReticle(
+                modifier = Modifier.align(Alignment.Center),
+                isMeasuring = isMeasuring
+            )
+        }
+
+        // Live measurement preview overlay
+        if (isMeasuring && livePreviewDistance != null) {
+            LiveMeasurementPreview(
+                distance = viewModel.formatDistance(livePreviewDistance!!),
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
+        // Measurement overlays
+        MeasurementOverlay(
+            measurements = measurements,
+            selectedUnit = selectedUnit,
+            viewModel = viewModel,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Error message
+        errorMessage?.let { error ->
+            Snackbar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(16.dp),
+                action = {
+                    TextButton(onClick = { errorMessage = null }) {
+                        Text("Dismiss")
+                    }
+                }
+            ) {
+                Text(error)
+            }
+        }
+
+        // iOS Measure-style center + button
+        if (arSession != null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Undo button (only show if have measurements)
+                if (measurements.isNotEmpty() && !isMeasuring) {
+                    FloatingActionButton(
+                        onClick = { viewModel.undoLast() },
+                        containerColor = Color.White.copy(alpha = 0.3f),
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Undo",
+                            tint = Color.White
+                        )
+                    }
+                }
+                
+                // Main + button (changes to Stop when measuring)
+                FloatingActionButton(
+                    onClick = {
+                        currentFrame?.let { frame ->
+                            val width = frame.camera.imageIntrinsics.imageDimensions[0]
+                            val height = frame.camera.imageIntrinsics.imageDimensions[1]
+                            viewModel.startMeasurement(frame, width / 2f, height / 2f)
+                            
+                            // Haptic feedback
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                vibrator?.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                            } else {
+                                @Suppress("DEPRECATION")
+                                vibrator?.vibrate(50)
+                            }
+                        }
+                    },
+                    containerColor = if (isMeasuring) Color.Red else Color.White,
+                    modifier = Modifier.size(72.dp)
+                ) {
+                    if (isMeasuring) {
+                        // Show stop square
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .background(Color.White, shape = MaterialTheme.shapes.small)
+                        )
+                    } else {
+                        // Show + icon
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Start Measurement",
+                            tint = Color.Black,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                }
+                
+                // Helper text
+                Text(
+                    text = if (isMeasuring) "Tap to finish" else "Tap + to measure",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.5f), shape = MaterialTheme.shapes.small)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+        }
+
+        // Side control buttons
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Save button
+            if (measurements.isNotEmpty()) {
+                FloatingActionButton(
+                    onClick = { viewModel.saveMeasurement() },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Save",
+                        tint = Color.White
+                    )
+                }
+            }
+            
+            // Clear button
+            if (measurements.isNotEmpty()) {
+                FloatingActionButton(
+                    onClick = { viewModel.clearMeasurements() },
+                    containerColor = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Clear, 
+                        contentDescription = "Clear",
+                        tint = Color.White
+                    )
+                }
+            }
+
+            // Unit toggle button
+            FloatingActionButton(
+                onClick = { viewModel.toggleUnit() },
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.size(56.dp)
+            ) {
+                Text(
+                    text = selectedUnit.getSymbol(),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+
+            // Level button
+            FloatingActionButton(
+                onClick = { navController.navigate("level") },
+                containerColor = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(56.dp)
+            ) {
+                Text(
+                    text = "Level",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+        }
+
+        // Close button
+        IconButton(
+            onClick = { navController.popBackStack() },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+        ) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Close",
+                tint = Color.White
+            )
+        }
+
+        // Instruction text and status
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 64.dp),
+            color = Color.Black.copy(alpha = 0.7f),
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Instruction based on state
+                val instructionText = when {
+                    !viewModel.hasDetectedPlanes.collectAsState().value -> 
+                        "Move device slowly to detect surfaces"
+                    isMeasuring ->
+                        "Move to end point and tap + to finish"
+                    measurements.isEmpty() -> 
+                        "Point at a surface and tap + to start measuring"
+                    else -> 
+                        "${measurements.size} measurement${if (measurements.size > 1) "s" else ""}"
+                }
+                
+                Text(
+                    text = instructionText,
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                
+                // Show plane detection status
+                if (viewModel.hasDetectedPlanes.collectAsState().value && !isMeasuring) {
+                    Text(
+                        text = "✓ Surfaces detected - Ready to measure",
+                        color = Color.Green,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// Smart reticle that changes based on state
+@Composable
+fun SmartReticle(
+    modifier: Modifier = Modifier,
+    isMeasuring: Boolean
+) {
+    Canvas(modifier = modifier.size(48.dp)) {
+        val centerX = size.width / 2
+        val centerY = size.height / 2
+        val radius = size.width / 2
+
+        if (isMeasuring) {
+            // Show filled circle when actively measuring
+            drawCircle(
+                color = Color.Yellow,
+                radius = radius * 0.8f,
+                center = Offset(centerX, centerY),
+                alpha = 0.6f
+            )
+            drawCircle(
+                color = Color.Yellow,
+                radius = radius,
+                center = Offset(centerX, centerY),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
+            )
+        } else {
+            // Show simple white circle when ready
+            drawCircle(
+                color = Color.White,
+                radius = radius,
+                center = Offset(centerX, centerY),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+            )
+            
+            // Center dot
+            drawCircle(
+                color = Color.White,
+                radius = 4.dp.toPx(),
+                center = Offset(centerX, centerY)
+            )
+        }
+    }
+}
+
+// Live measurement preview showing dynamic distance
+@Composable
+fun LiveMeasurementPreview(
+    distance: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.offset(y = (-80).dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            color = Color.Yellow.copy(alpha = 0.9f),
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Text(
+                text = distance,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                color = Color.Black,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        
+        // Arrow pointing down to reticle
+        Canvas(modifier = Modifier.size(20.dp, 12.dp)) {
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(size.width / 2, size.height)
+                lineTo(0f, 0f)
+                lineTo(size.width, 0f)
+                close()
+            }
+            drawPath(
+                path = path,
+                color = Color.Yellow.copy(alpha = 0.9f)
+            )
+        }
+    }
+}
+
+@Composable
+fun Crosshair(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.size(32.dp)) {
+        val centerX = size.width / 2
+        val centerY = size.height / 2
+        val radius = size.width / 2
+        val lineLength = radius * 0.6f
+
+        // Draw circle
+        drawCircle(
+            color = Color.White,
+            radius = radius,
+            center = Offset(centerX, centerY),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+        )
+
+        // Draw horizontal line
+        drawLine(
+            color = Color.White,
+            start = Offset(centerX - lineLength, centerY),
+            end = Offset(centerX + lineLength, centerY),
+            strokeWidth = 2.dp.toPx()
+        )
+
+        // Draw vertical line
+        drawLine(
+            color = Color.White,
+            start = Offset(centerX, centerY - lineLength),
+            end = Offset(centerX, centerY + lineLength),
+            strokeWidth = 2.dp.toPx()
+        )
+
+        // Draw center dot
+        drawCircle(
+            color = Color.White,
+            radius = 3.dp.toPx(),
+            center = Offset(centerX, centerY)
+        )
+    }
+}
+
+@Composable
+fun MeasurementOverlay(
+    measurements: List<com.example.measureapp.data.models.MeasurementLine>,
+    @Suppress("UNUSED_PARAMETER") selectedUnit: com.example.measureapp.data.models.UnitType,
+    viewModel: MeasureViewModel,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier) {
+        measurements.forEach { measurement ->
+            val distance = viewModel.formatDistance(measurement.distanceMeters)
+            
+            // Display measurement label
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(8.dp),
+                color = Color.Black.copy(alpha = 0.7f),
+                shape = CircleShape
+            ) {
+                Text(
+                    text = distance,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    color = Color.Yellow,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
