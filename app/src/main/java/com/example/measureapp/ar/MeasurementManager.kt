@@ -18,22 +18,62 @@ import kotlin.math.acos
 import kotlin.math.sqrt
 import kotlin.math.min
 
+/**
+ * SmartHit - Represents the result of intelligent hit testing with snapping
+ */
+sealed class SmartHit {
+    object None : SmartHit()
+    data class Surface(val hitPose: Pose) : SmartHit()
+    data class SnappedVertex(val hitPosition: Position, val anchor: Anchor) : SmartHit()
+    data class SnappedEdge(val hitPosition: Position) : SmartHit()
+    
+    fun getPose(): Pose? = when (this) {
+        is None -> null
+        is Surface -> hitPose
+        is SnappedVertex -> {
+            // Create pose from position with identity rotation
+            Pose(
+                floatArrayOf(hitPosition.x, hitPosition.y, hitPosition.z),
+                floatArrayOf(0f, 0f, 0f, 1f)
+            )
+        }
+        is SnappedEdge -> {
+            // Create pose from position with identity rotation
+            Pose(
+                floatArrayOf(hitPosition.x, hitPosition.y, hitPosition.z),
+                floatArrayOf(0f, 0f, 0f, 1f)
+            )
+        }
+    }
+    
+    fun getPosition(): Position? = when (this) {
+        is None -> null
+        is Surface -> Position(hitPose.tx(), hitPose.ty(), hitPose.tz())
+        is SnappedVertex -> hitPosition
+        is SnappedEdge -> hitPosition
+    }
+    
+    fun isSnapped(): Boolean = this is SnappedVertex || this is SnappedEdge
+}
+
 class MeasurementManager(
     private val context: Context,
     private val sceneView: ARSceneView,
     private val onMeasurementChanged: (String) -> Unit
 ) {
-    data class MeasurementLabel(val position: Position, val distance: Float)
+    data class MeasurementLabel(val position: Position, val distance: Float, val text: String)
     data class MeasurementChain(val segments: MutableList<Float> = mutableListOf())
+    data class LineSegment(val start: Position, val end: Position)
     
     private val anchors = mutableListOf<Anchor>()
     private val nodes = mutableListOf<AnchorNode>()
     private val cornerNodes = mutableListOf<AnchorNode>() // Track corner nodes for snapping
     private val segmentDistances = mutableListOf<Float>() // Store each segment distance
+    private val lineSegments = mutableListOf<LineSegment>() // Track line segments for edge snapping
     val labels = mutableListOf<MeasurementLabel>() // 3D positions for labels
     private val measurementChains = mutableListOf<MeasurementChain>() // Track separate measurement chains
     private var currentChain = MeasurementChain()
-    private var snappedAnchor: Anchor? = null // Track if we're snapped to an existing anchor
+    private var currentSmartHit: SmartHit = SmartHit.None
 
     // Rubber Banding State
     private var tempLineNode: CylinderNode? = null
@@ -42,36 +82,82 @@ class MeasurementManager(
     var currentLiveDistance: Float = 0f
     private var isMeasuring = true // Track if we're actively measuring
     var hasStartedMeasurement = false // Track if user has placed at least one point
+    
+    // Snapping thresholds
+    private val VERTEX_SNAP_DISTANCE = 0.10f // 10cm for vertex snapping
+    private val EDGE_SNAP_DISTANCE = 0.05f   // 5cm for edge snapping
 
-    // Call this every frame from MeasureActivity
+    /**
+     * Perform intelligent hit testing with vertex and edge snapping
+     * This is the core of the "Pro" experience
+     */
+    fun performSmartHitTest(rawHit: HitResult?): SmartHit {
+        if (rawHit == null) return SmartHit.None
+        
+        val rawPose = rawHit.hitPose
+        val rawPos = Position(rawPose.tx(), rawPose.ty(), rawPose.tz())
+        
+        // Only perform snapping if we have at least one point placed
+        if (cornerNodes.isEmpty()) {
+            return SmartHit.Surface(rawPose)
+        }
+        
+        // Priority 1: Vertex Snapping (10cm threshold)
+        for (node in cornerNodes) {
+            if (node.anchor != null) {
+                val nodePos = node.worldPosition
+                val distance = length(rawPos - nodePos)
+                
+                if (distance < VERTEX_SNAP_DISTANCE) {
+                    android.util.Log.d("SmartHit", "Snapped to VERTEX at distance $distance")
+                    highlightNode(node, true)
+                    return SmartHit.SnappedVertex(nodePos, node.anchor!!)
+                }
+            }
+        }
+        
+        // Priority 2: Edge Snapping (5cm threshold)
+        for (lineSegment in lineSegments) {
+            val projectedPoint = projectPointOnSegment(rawPos, lineSegment.start, lineSegment.end)
+            val distance = length(rawPos - projectedPoint)
+            
+            if (distance < EDGE_SNAP_DISTANCE) {
+                android.util.Log.d("SmartHit", "Snapped to EDGE at distance $distance")
+                resetHighlights()
+                return SmartHit.SnappedEdge(projectedPoint)
+            }
+        }
+        
+        // Priority 3: Normal surface tracking
+        resetHighlights()
+        return SmartHit.Surface(rawPose)
+    }
+    
+    /**
+     * Call this every frame from MeasureActivity
+     * Now uses SmartHit for intelligent snapping
+     */
     fun onUpdate(hitResult: HitResult?) {
         if (!isMeasuring) return // Stop updating if measurement is done
+        
+        // ALWAYS perform smart hit testing so reticle works before first point
+        currentSmartHit = performSmartHitTest(hitResult)
+        
+        // If no start point yet, just update currentSmartHit and return
         val startAnchor = lastAnchor ?: return
         
         // If we have a start point and a valid hit, stretch the line
-        if (hitResult != null) {
+        val endPose = currentSmartHit.getPose()
+        if (endPose != null) {
             val startPose = startAnchor.pose
-            var endPose = hitResult.hitPose
-            
-            // Check for corner snapping
-            val nearbyCorner = findNearestCorner(endPose)
-            if (nearbyCorner != null) {
-                // Snap to existing corner
-                snappedAnchor = nearbyCorner.anchor
-                endPose = nearbyCorner.anchor.pose
-                highlightNode(nearbyCorner, true)
-            } else {
-                snappedAnchor = null
-                resetHighlights()
-            }
             
             // Calculate distance for UI immediately
             val distance = calculateDistance(startPose, endPose)
             currentLiveDistance = distance
-            val statusText = if (snappedAnchor != null) {
-                "${formatDistance(distance)} [Snapped]"
-            } else {
-                formatDistance(distance)
+            val statusText = when (currentSmartHit) {
+                is SmartHit.SnappedVertex -> "${formatDistance(distance)} [Vertex]"
+                is SmartHit.SnappedEdge -> "${formatDistance(distance)} [Edge]"
+                else -> formatDistance(distance)
             }
             onMeasurementChanged(statusText)
 
@@ -86,15 +172,24 @@ class MeasurementManager(
             // If we lost tracking, hide the temp line
             tempLineNode?.isVisible = false
             currentLivePosition = null
-            snappedAnchor = null
+            currentSmartHit = SmartHit.None
             resetHighlights()
         }
     }
+    
+    /**
+     * Get the current smart hit for reticle visualization
+     */
+    fun getCurrentSmartHit(): SmartHit = currentSmartHit
 
     fun addPoint(anchor: Anchor, isExistingAnchor: Boolean = false) {
-        // Use snapped anchor if we detected one during onUpdate
-        val finalAnchor = snappedAnchor ?: anchor
-        val shouldRenderSphere = !isExistingAnchor && snappedAnchor == null
+        // Determine final anchor based on current SmartHit
+        val finalAnchor = when (val hit = currentSmartHit) {
+            is SmartHit.SnappedVertex -> hit.anchor
+            else -> anchor
+        }
+        
+        val shouldRenderSphere = !isExistingAnchor && currentSmartHit !is SmartHit.SnappedVertex
         
         anchors.add(finalAnchor)
         hasStartedMeasurement = true
@@ -130,8 +225,8 @@ class MeasurementManager(
             onMeasurementChanged("Move to end point")
         }
         
-        // Reset snapped state after adding point
-        snappedAnchor = null
+        // Reset smart hit state after adding point
+        currentSmartHit = SmartHit.None
         resetHighlights()
     }
 
@@ -150,7 +245,7 @@ class MeasurementManager(
             )
             tempLineNode = CylinderNode(
                 engine = sceneView.engine,
-                radius = 0.008f,
+                radius = 0.003f, // 3mm - thinner for less obstruction
                 height = 1.0f,
                 materialInstance = yellowMaterial
             ).apply {
@@ -179,7 +274,7 @@ class MeasurementManager(
 
         val lineNode = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.01f, // Increased from 0.005f for better visibility
+            radius = 0.004f, // 4mm - thin but visible
             height = 1.0f,
             materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Permanent line is White
         ).apply {
@@ -191,11 +286,15 @@ class MeasurementManager(
         }
         sceneView.addChildNode(lineNode)
         
+        // Store line segment for edge snapping
+        lineSegments.add(LineSegment(point1, point2))
+        
         // Store segment distance and label position
         segmentDistances.add(distance)
         currentChain.segments.add(distance)
         val midpoint = point1 + (difference * 0.5f)
-        labels.add(MeasurementLabel(midpoint, distance))
+        val distanceText = formatDistance(distance)
+        labels.add(MeasurementLabel(midpoint, distance, distanceText))
         
         // Show current chain total
         val currentChainTotal = currentChain.segments.sum()
@@ -357,13 +456,14 @@ class MeasurementManager(
         tempLineNode = null
         lastAnchor = null
         segmentDistances.clear()
+        lineSegments.clear()
         labels.clear()
         currentLivePosition = null
         measurementChains.clear()
         currentChain = MeasurementChain()
         isMeasuring = true
         hasStartedMeasurement = false
-        snappedAnchor = null
+        currentSmartHit = SmartHit.None
         
         onMeasurementChanged("Point at surface and tap + to start")
     }
@@ -398,7 +498,32 @@ class MeasurementManager(
     private fun cross(a: Float3, b: Float3) = Float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
     private fun dot(a: Float3, b: Float3) = a.x * b.x + a.y * b.y + a.z * b.z
     
-    // --- Advanced Snapping Engine ---
+    /**
+     * Project a point onto a line segment (with clamping to segment endpoints)
+     * This is used for edge snapping
+     */
+    private fun projectPointOnSegment(point: Position, segmentStart: Position, segmentEnd: Position): Position {
+        val ab = segmentEnd - segmentStart
+        val ap = point - segmentStart
+        
+        val abLengthSq = dotPos(ab, ab)
+        if (abLengthSq == 0f) return segmentStart // Degenerate segment
+        
+        // Calculate projection parameter (0 = at start, 1 = at end)
+        var t = dotPos(ap, ab) / abLengthSq
+        
+        // Clamp to segment bounds
+        t = t.coerceIn(0.0f, 1.0f)
+        
+        // Return the projected point
+        return segmentStart + (ab * t)
+    }
+    
+    private fun dotPos(a: Position, b: Position): Float {
+        return a.x * b.x + a.y * b.y + a.z * b.z
+    }
+    
+    // --- Advanced Snapping Engine (Legacy - kept for plane edge detection) ---
     
     /**
      * Compute snapped cursor state with edge and vertex detection
@@ -503,7 +628,7 @@ class MeasurementManager(
             val b = Position(worldB.tx(), worldB.ty(), worldB.tz())
             
             // Find closest point on line segment
-            val closest = closestPointOnSegment(a, b, point)
+            val closest = projectPointOnSegment(point, a, b)
             val distance = length(closest - point)
             
             if (distance < minDistance && distance < snapThreshold) {
@@ -514,24 +639,15 @@ class MeasurementManager(
         
         return nearestPoint
     }
-    
-    /**
-     * Find the closest point on a line segment (A-B) to point P
-     */
-    private fun closestPointOnSegment(a: Position, b: Position, p: Position): Position {
-        val ab = b - a
-        val ap = p - a
-        val abLengthSq = dotPos(ab, ab)
-        
-        if (abLengthSq == 0f) return a // A and B are the same point
-        
-        var t = dotPos(ap, ab) / abLengthSq
-        t = t.coerceIn(0.0f, 1.0f)
-        
-        return a + (ab * t)
-    }
-    
-    private fun dotPos(a: Position, b: Position): Float {
-        return a.x * b.x + a.y * b.y + a.z * b.z
-    }
+}
+
+data class CursorState(
+    val position: Position,
+    val rotation: Quaternion,
+    val isSnapped: Boolean,
+    val snapType: SnapType
+)
+
+enum class SnapType {
+    NONE, VERTEX, EDGE
 }

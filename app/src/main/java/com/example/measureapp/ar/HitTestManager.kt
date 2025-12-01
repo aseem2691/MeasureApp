@@ -11,22 +11,19 @@ import javax.inject.Singleton
 
 /**
  * Manages AR hit testing to place measurement points in 3D space
- * Now enhanced with ToF sensor support
+ * Uses Config.DepthMode.AUTOMATIC for native ToF sensor support
  */
 @Singleton
 class HitTestManager @Inject constructor(
     @param:ApplicationContext private val context: Context
 ) {
     
-    private var tofDepthManager: ToFDepthManager? = null
-    
     /**
      * Initialize with AR session (call after session created)
      */
     fun initialize(session: Session) {
-        tofDepthManager = ToFDepthManager(context, session)
-        val depthEnabled = tofDepthManager?.enableDepthSensing() ?: false
-        android.util.Log.d("HitTestManager", "ToF Depth enabled: $depthEnabled")
+        // Depth mode is configured in MeasureActivity via Config.DepthMode.AUTOMATIC
+        android.util.Log.d("HitTestManager", "HitTestManager initialized")
     }
     
     /**

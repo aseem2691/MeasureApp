@@ -15,9 +15,9 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Canvas Overlay for 3D Labels -->
-    <com.example.measureapp.ar.MeasurementOverlay
-        android:id="@+id/measurement_overlay"
+    <!-- iOS-style Overlay for 3D Labels -->
+    <com.example.measureapp.ar.OverlayView
+        android:id="@+id/overlay_view"
         android:layout_width="0dp"
         android:layout_height="0dp"
         app:layout_constraintBottom_toBottomOf="parent"
@@ -63,20 +63,7 @@
             android:paddingHorizontal="16dp" />
     </LinearLayout>
 
-    <!-- Center Reticle (Target) -->
-    <ImageView
-        android:id="@+id/center_reticle"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:src="@drawable/center_circle"
-        android:alpha="0.8"
-        android:contentDescription="@string/reticle_content_description"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <!-- Prompt Text -->
+    <!-- Prompt Text (3D Reticle handles center visualization now) -->
     <TextView
         android:id="@+id/prompt_text"
         android:layout_width="wrap_content"
