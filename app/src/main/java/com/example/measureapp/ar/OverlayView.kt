@@ -57,11 +57,17 @@ class OverlayView @JvmOverloads constructor(
     private val paddingHorizontal = dpToPx(12f)
     private val paddingVertical = dpToPx(6f)
     
+    // Track drawn label bounds to prevent overlaps
+    private val drawnLabels = mutableListOf<RectF>()
+    
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         
         val camera = arCamera ?: return
         val manager = measurementManager ?: return
+        
+        // Clear previous frame's label positions
+        drawnLabels.clear()
         
         // Draw permanent measurement labels
         for (label in manager.labels) {
@@ -83,7 +89,7 @@ class OverlayView @JvmOverloads constructor(
     }
     
     /**
-     * Draw a single measurement label
+     * Draw a single measurement label with smart positioning to avoid overlaps
      */
     private fun drawLabel(
         canvas: Canvas,
@@ -102,13 +108,31 @@ class OverlayView @JvmOverloads constructor(
         val labelWidth = textBounds.width() + paddingHorizontal * 2
         val labelHeight = textBounds.height() + paddingVertical * 2
         
-        val left = screenCoords.x - labelWidth / 2
-        val top = screenCoords.y - labelHeight / 2
-        val right = left + labelWidth
-        val bottom = top + labelHeight
+        // Try to find non-overlapping position
+        var offsetY = 0f
+        val offsetStep = labelHeight + dpToPx(4f)
+        var rectF = RectF(
+            screenCoords.x - labelWidth / 2,
+            screenCoords.y - labelHeight / 2 + offsetY,
+            screenCoords.x + labelWidth / 2,
+            screenCoords.y + labelHeight / 2 + offsetY
+        )
         
-        // Draw rounded rectangle background
-        val rectF = RectF(left, top, right, bottom)
+        // Check for overlaps and adjust position
+        var attempts = 0
+        while (attempts < 5 && hasOverlap(rectF)) {
+            attempts++
+            offsetY = if (attempts % 2 == 1) offsetStep * ((attempts + 1) / 2) else -offsetStep * (attempts / 2)
+            rectF = RectF(
+                screenCoords.x - labelWidth / 2,
+                screenCoords.y - labelHeight / 2 + offsetY,
+                screenCoords.x + labelWidth / 2,
+                screenCoords.y + labelHeight / 2 + offsetY
+            )
+        }
+        
+        // Store this label's bounds
+        drawnLabels.add(rectF)
         
         // Make live label slightly transparent
         if (isLive) {
@@ -137,6 +161,18 @@ class OverlayView @JvmOverloads constructor(
         path.lineTo(screenCoords.x, screenCoords.y)
         
         canvas.drawPath(path, dottedLinePaint)
+    }
+    
+    /**
+     * Check if a label rect overlaps with any previously drawn labels
+     */
+    private fun hasOverlap(rect: RectF): Boolean {
+        for (existing in drawnLabels) {
+            if (RectF.intersects(existing, rect)) {
+                return true
+            }
+        }
+        return false
     }
     
     /**

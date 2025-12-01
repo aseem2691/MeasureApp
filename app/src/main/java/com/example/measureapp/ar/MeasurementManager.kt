@@ -84,9 +84,13 @@ class MeasurementManager(
     private var isMeasuring = true // Track if we're actively measuring
     var hasStartedMeasurement = false // Track if user has placed at least one point
     
-    // Snapping thresholds
-    private val VERTEX_SNAP_DISTANCE = 0.10f // 10cm for vertex snapping
-    private val EDGE_SNAP_DISTANCE = 0.05f   // 5cm for edge snapping
+    // Distance smoothing for consistent measurements
+    private var smoothedDistance: Float = 0f
+    private val distanceSmoothingFactor = 0.3f // Smooth distance changes
+    
+    // Snapping thresholds - Reduced for less aggressive auto-snap
+    private val VERTEX_SNAP_DISTANCE = 0.05f // 5cm for vertex snapping (less aggressive)
+    private val EDGE_SNAP_DISTANCE = 0.03f   // 3cm for edge snapping (more precise)
 
     /**
      * Perform intelligent hit testing with vertex and edge snapping
@@ -152,13 +156,21 @@ class MeasurementManager(
         if (endPose != null) {
             val startPose = startAnchor.pose
             
-            // Calculate distance for UI immediately
+            // Calculate distance for UI immediately with smoothing to reduce jitter
             val distance = calculateDistance(startPose, endPose)
-            currentLiveDistance = distance
+            
+            // Smooth the distance to reduce inconsistency and jitter
+            smoothedDistance = if (smoothedDistance == 0f) {
+                distance // Initialize on first measurement
+            } else {
+                smoothedDistance + (distance - smoothedDistance) * distanceSmoothingFactor
+            }
+            currentLiveDistance = smoothedDistance
+            
             val statusText = when (currentSmartHit) {
-                is SmartHit.SnappedVertex -> "${formatDistance(distance)} [Vertex]"
-                is SmartHit.SnappedEdge -> "${formatDistance(distance)} [Edge]"
-                else -> formatDistance(distance)
+                is SmartHit.SnappedVertex -> "${formatDistance(smoothedDistance)} [Vertex]"
+                is SmartHit.SnappedEdge -> "${formatDistance(smoothedDistance)} [Edge]"
+                else -> formatDistance(smoothedDistance)
             }
             onMeasurementChanged(statusText)
 
@@ -207,8 +219,8 @@ class MeasurementManager(
             
             SphereNode(
                 engine = sceneView.engine,
-                radius = 0.005f, // 0.5cm - small red dot
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
+                radius = 0.004f, // 4mm - ultra-tiny crisp dot (iOS style)
+                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // White like iOS
             ).apply {
                 parent = anchorNode
             }
@@ -249,9 +261,9 @@ class MeasurementManager(
             )
             tempLineNode = CylinderNode(
                 engine = sceneView.engine,
-                radius = 0.001f, // 1mm - very thin yellow guide line
+                radius = 0.001f, // 1mm - ultra-thin guide line (iOS style)
                 height = 1.0f,
-                materialInstance = yellowMaterial
+                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.6f) // Semi-transparent white
             ).apply {
                 isShadowCaster = false
                 isShadowReceiver = false
@@ -278,9 +290,9 @@ class MeasurementManager(
 
         val lineNode = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.0015f, // 1.5mm - thin white line
+            radius = 0.0015f, // 1.5mm - laser-thin line (iOS AR Ruler style)
             height = 1.0f,
-            materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Permanent line is White
+            materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Pure white
         ).apply {
             position = point1 + (difference * 0.5f)
             scale = Float3(1.0f, distance, 1.0f)
@@ -385,6 +397,13 @@ class MeasurementManager(
         isMeasuring = true // Keep measuring mode ON for next measurement
         hasStartedMeasurement = false // Reset for next measurement
         
+        // CRITICAL: Reset smart hit state to prevent connecting to old measurements
+        currentSmartHit = SmartHit.None
+        smoothedDistance = 0f // Reset smoothing
+        
+        // CRITICAL FIX: Clear corner nodes to prevent snapping to old measurement points
+        cornerNodes.clear() // This prevents diagonal connections and new measurement connections
+        
         // Remove the temporary line
         tempLineNode?.let {
             sceneView.removeChildNode(it)
@@ -443,9 +462,9 @@ class MeasurementManager(
     }
     
     /**
-     * DRIFT FIX: Refresh line positions from anchors every frame
+     * DRIFT FIX: Refresh line AND node positions from anchors every frame
      * ARCore continuously refines anchor positions as it learns the environment.
-     * This method updates line geometry to match the current anchor poses.
+     * This method updates both line geometry AND corner sphere positions.
      */
     fun refreshLines() {
         if (cornerNodes.size < 2 || lineNodes.isEmpty()) return
@@ -463,6 +482,11 @@ class MeasurementManager(
                     val pose2 = anchor2.pose
                     val start = Position(pose1.tx(), pose1.ty(), pose1.tz())
                     val end = Position(pose2.tx(), pose2.ty(), pose2.tz())
+                    
+                    // IMPROVEMENT: Also update the AnchorNode positions
+                    // This ensures corner spheres stay aligned with ARCore's refined pose
+                    cornerNodes[i].position = start
+                    cornerNodes[i + 1].position = end
                     
                     // Update line geometry
                     val lineNode = lineNodes[i]
@@ -513,6 +537,7 @@ class MeasurementManager(
         currentLivePosition = null
         measurementChains.clear()
         currentChain = MeasurementChain()
+        cornerNodes.clear() // Clear snapping points
         isMeasuring = true
         hasStartedMeasurement = false
         currentSmartHit = SmartHit.None

@@ -200,11 +200,23 @@ class MeasureActivity : AppCompatActivity() {
                     val dy = hitPose.ty() - cameraPose.ty()
                     val dz = hitPose.tz() - cameraPose.tz()
                     val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                    Log.d(TAG, "Hit distance from camera: ${distance}m")
+                    // Only log distance occasionally to reduce spam
+                    if (frame.timestamp % 30L == 0L) {
+                        Log.d(TAG, "Hit distance: ${distance}m")
+                    }
                     if (distance <= 10.0f && distance >= 0.1f) hit else null // Allow 10cm to 10m
                 }
                 
                 lastHitResult = validHitResult
+                
+                // Monitor tracking quality
+                if (frame.timestamp % 60L == 0L) {
+                    val trackingState = camera.trackingState
+                    val trackingReason = camera.trackingFailureReason
+                    if (trackingState != com.google.ar.core.TrackingState.TRACKING) {
+                        Log.w(TAG, "Tracking quality: $trackingState, reason: $trackingReason")
+                    }
+                }
                 
                 // 2. UPDATE THE MANAGER - This performs smart hit testing and updates rubber band
                 measurementManager.onUpdate(validHitResult)
