@@ -68,6 +68,7 @@ class MeasurementManager(
     private val anchors = mutableListOf<Anchor>()
     private val nodes = mutableListOf<AnchorNode>()
     private val cornerNodes = mutableListOf<AnchorNode>() // Track corner nodes for snapping
+    private val lineNodes = mutableListOf<CylinderNode>() // Track line nodes for drift fix
     private val segmentDistances = mutableListOf<Float>() // Store each segment distance
     private val lineSegments = mutableListOf<LineSegment>() // Track line segments for edge snapping
     val labels = mutableListOf<MeasurementLabel>() // 3D positions for labels
@@ -175,6 +176,9 @@ class MeasurementManager(
             currentSmartHit = SmartHit.None
             resetHighlights()
         }
+        
+        // CRITICAL: Refresh line positions from anchors every frame (Drift fix)
+        refreshLines()
     }
     
     /**
@@ -285,6 +289,9 @@ class MeasurementManager(
             isShadowReceiver = false
         }
         sceneView.addChildNode(lineNode)
+        
+        // Store line node for drift fix refresh
+        lineNodes.add(lineNode)
         
         // Store line segment for edge snapping
         lineSegments.add(LineSegment(point1, point2))
@@ -435,6 +442,47 @@ class MeasurementManager(
         finishCurrentMeasurement()
     }
     
+    /**
+     * DRIFT FIX: Refresh line positions from anchors every frame
+     * ARCore continuously refines anchor positions as it learns the environment.
+     * This method updates line geometry to match the current anchor poses.
+     */
+    fun refreshLines() {
+        if (cornerNodes.size < 2 || lineNodes.isEmpty()) return
+        
+        // Update each permanent line
+        for (i in 0 until lineNodes.size) {
+            // Line i connects cornerNode[i] to cornerNode[i+1]
+            if (i + 1 < cornerNodes.size) {
+                val anchor1 = cornerNodes[i].anchor
+                val anchor2 = cornerNodes[i + 1].anchor
+                
+                if (anchor1 != null && anchor2 != null) {
+                    // CRITICAL: Use fresh anchor poses, not worldPosition
+                    val pose1 = anchor1.pose
+                    val pose2 = anchor2.pose
+                    val start = Position(pose1.tx(), pose1.ty(), pose1.tz())
+                    val end = Position(pose2.tx(), pose2.ty(), pose2.tz())
+                    
+                    // Update line geometry
+                    val lineNode = lineNodes[i]
+                    val diff = end - start
+                    val dist = length(diff)
+                    
+                    if (dist >= 0.001f) {
+                        lineNode.isVisible = true
+                        val mid = start + (diff * 0.5f)
+                        lineNode.position = mid
+                        lineNode.scale = Float3(1.0f, dist, 1.0f)
+                        lineNode.quaternion = calculateRotation(diff)
+                    } else {
+                        lineNode.isVisible = false
+                    }
+                }
+            }
+        }
+    }
+    
     fun clear() {
         // Remove all anchors
         anchors.forEach { it.detach() }
@@ -447,6 +495,10 @@ class MeasurementManager(
         }
         nodes.clear()
         cornerNodes.clear()
+        
+        // Clear line nodes
+        lineNodes.forEach { sceneView.removeChildNode(it) }
+        lineNodes.clear()
         
         // Clear temp line
         tempLineNode?.let {
