@@ -207,7 +207,7 @@ class MeasurementManager(
             
             SphereNode(
                 engine = sceneView.engine,
-                radius = 0.015f, // 1.5cm
+                radius = 0.005f, // 0.5cm - small red dot
                 materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
             ).apply {
                 parent = anchorNode
@@ -249,7 +249,7 @@ class MeasurementManager(
             )
             tempLineNode = CylinderNode(
                 engine = sceneView.engine,
-                radius = 0.003f, // 3mm - thinner for less obstruction
+                radius = 0.001f, // 1mm - very thin yellow guide line
                 height = 1.0f,
                 materialInstance = yellowMaterial
             ).apply {
@@ -278,7 +278,7 @@ class MeasurementManager(
 
         val lineNode = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.004f, // 4mm - thin but visible
+            radius = 0.0015f, // 1.5mm - thin white line
             height = 1.0f,
             materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Permanent line is White
         ).apply {

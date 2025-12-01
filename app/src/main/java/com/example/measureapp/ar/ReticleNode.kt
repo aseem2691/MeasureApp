@@ -62,11 +62,11 @@ class ReticleNode(
      * Create the visual components of the reticle
      */
     private fun createReticleGeometry() {
-        // Outer Ring - 3cm radius, 1.5mm thick, lies flat on surface
+        // Outer Ring - 1.5cm radius, 1mm thick, lies flat on surface
         outerRing = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.03f,  // 3cm radius - optimal size
-            height = 0.0015f, // 1.5mm thickness
+            radius = 0.015f,  // 1.5cm radius - small and unobtrusive
+            height = 0.001f, // 1mm thickness
             materialInstance = sceneView.materialLoader.createColorInstance(
                 Color.WHITE,
                 1.0f
@@ -80,10 +80,10 @@ class ReticleNode(
             parent = this@ReticleNode
         }
         
-        // Inner Dot - 0.5cm radius sphere (precise center indicator)
+        // Inner Dot - 0.3cm radius sphere (precise center indicator)
         innerDot = SphereNode(
             engine = sceneView.engine,
-            radius = 0.005f, // 0.5cm radius - clear and precise
+            radius = 0.003f, // 0.3cm radius - small precise dot
             materialInstance = sceneView.materialLoader.createColorInstance(
                 Color.WHITE,
                 1.0f

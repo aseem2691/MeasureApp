@@ -34,6 +34,7 @@ class OverlayView @JvmOverloads constructor(
         alpha = (0.9f * 255).toInt()
         style = Paint.Style.FILL
         isAntiAlias = true
+        setShadowLayer(4f, 0f, 2f, Color.LTGRAY) // Clean drop shadow
     }
     
     private val labelTextPaint = Paint().apply {
