@@ -42,6 +42,7 @@ class ReticleNode(
     
     private var outerRing: CylinderNode? = null
     private var innerRing: CylinderNode? = null // iOS-style inner ring
+    private val ringSegments = mutableListOf<CylinderNode>() // For hollow ring
     private var innerDot: SphereNode? = null
     private var currentState = State.SEARCHING
     
@@ -61,104 +62,39 @@ class ReticleNode(
     }
     
     /**
-     * Create iOS AR Ruler style reticle with HOLLOW CENTER:
-     * - Outer circle (2cm radius) - very transparent to see through
-     * - Inner circle (0.8cm radius) - solid area (NOT hollow, just smaller for precision)
-     * - Tiny center dot (1mm) for exact positioning
-     * - 4 crosshair lines extending from outer ring
-     * 
-     * Key: The "hollow" is achieved by making everything semi-transparent
-     * so you can see the object underneath perfectly
+     * Create iOS Measure style reticle - OPTIMIZED for GPU memory
+     * - Single thin ring (hollow appearance via thin cylinder)
+     * - Small center dot for precision
      */
     private fun createReticleGeometry() {
-        // Create HOLLOW ring using line segments that form a circle outline
-        // This creates a true ring (only the edge visible, not a solid disk)
-        val ringRadius = 0.018f // 1.8cm radius
-        val ringThickness = 0.0012f // 1.2mm line thickness
-        val numSegments = 24 // Smooth circle
-        
-        val outerSegments = mutableListOf<CylinderNode>()
-        for (i in 0 until numSegments) {
-            val angle1 = (i.toFloat() / numSegments) * 2f * Math.PI.toFloat()
-            val angle2 = ((i + 1).toFloat() / numSegments) * 2f * Math.PI.toFloat()
-            
-            val x1 = ringRadius * cos(angle1)
-            val z1 = ringRadius * sin(angle1)
-            val x2 = ringRadius * cos(angle2)
-            val z2 = ringRadius * sin(angle2)
-            
-            val midX = (x1 + x2) / 2f
-            val midZ = (z1 + z2) / 2f
-            val segmentLength = sqrt((x2 - x1) * (x2 - x1) + (z2 - z1) * (z2 - z1))
-            
-            val segmentNode = CylinderNode(
-                engine = sceneView.engine,
-                radius = ringThickness / 2f,
-                height = segmentLength,
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.8f)
-            ).apply {
-                isShadowCaster = false
-                isShadowReceiver = false
-                position = Position(midX, 0f, midZ)
-                
-                // Rotate to align with circle edge
-                val angle = atan2(z2 - z1, x2 - x1)
-                quaternion = Quaternion.fromAxisAngle(Float3(0f, 1f, 0f), Math.toDegrees(angle.toDouble()).toFloat()) *
-                           Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 90f)
-                parent = this@ReticleNode
-            }
-            outerSegments.add(segmentNode)
-        }
-        
-        // Store first segment as reference
-        outerRing = outerSegments.firstOrNull()
-        
-        // Small hollow inner ring for precision
-        val innerRadius = 0.004f // 4mm
-        val innerSegments = 12
-        val innerRingSegments = mutableListOf<CylinderNode>()
-        
-        for (i in 0 until innerSegments) {
-            val angle1 = (i.toFloat() / innerSegments) * 2f * Math.PI.toFloat()
-            val angle2 = ((i + 1).toFloat() / innerSegments) * 2f * Math.PI.toFloat()
-            
-            val x1 = innerRadius * cos(angle1)
-            val z1 = innerRadius * sin(angle1)
-            val x2 = innerRadius * cos(angle2)
-            val z2 = innerRadius * sin(angle2)
-            
-            val midX = (x1 + x2) / 2f
-            val midZ = (z1 + z2) / 2f
-            val segmentLength = sqrt((x2 - x1) * (x2 - x1) + (z2 - z1) * (z2 - z1))
-            
-            val segmentNode = CylinderNode(
-                engine = sceneView.engine,
-                radius = ringThickness / 2f,
-                height = segmentLength,
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.95f)
-            ).apply {
-                isShadowCaster = false
-                isShadowReceiver = false
-                position = Position(midX, 0f, midZ)
-                
-                val angle = atan2(z2 - z1, x2 - x1)
-                quaternion = Quaternion.fromAxisAngle(Float3(0f, 1f, 0f), Math.toDegrees(angle.toDouble()).toFloat()) *
-                           Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 90f)
-                parent = this@ReticleNode
-            }
-            innerRingSegments.add(segmentNode)
-        }
-        
-        // Store first segment as reference
-        innerRing = innerRingSegments.firstOrNull()
-        
-        // Ultra-tiny Center Dot - 1mm for PINPOINT precision (iOS style)
-        innerDot = SphereNode(
+        // Outer ring - thin cylinder creates hollow appearance
+        // More GPU-efficient than 36 segments
+        outerRing = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.001f, // 1mm radius - pinpoint dot
+            radius = 0.020f,  // 2cm radius
+            height = 0.001f, // 1mm thickness - thin outline
             materialInstance = sceneView.materialLoader.createColorInstance(
                 Color.WHITE,
-                1.0f // Fully visible center
+                0.85f // Semi-transparent for iOS style
+            )
+        ).apply {
+            isShadowCaster = false
+            isShadowReceiver = false
+            isVisible = true
+            // Rotate to lie flat on surface
+            quaternion = Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 90f * Math.PI.toFloat() / 180f)
+            parent = this@ReticleNode
+        }
+        
+        innerRing = null // Not needed - keep it simple
+        
+        // Center Dot - 2mm for targeting (visible but minimal)
+        innerDot = SphereNode(
+            engine = sceneView.engine,
+            radius = 0.002f, // 2mm radius
+            materialInstance = sceneView.materialLoader.createColorInstance(
+                Color.WHITE,
+                1.0f
             )
         ).apply {
             isShadowCaster = false
@@ -167,21 +103,7 @@ class ReticleNode(
             parent = this@ReticleNode
         }
         
-        // Create 4 crosshair lines (iOS style) - ultra-thin extending lines
-        val lineLength = 0.008f // 8mm lines - subtle
-        val lineThickness = 0.0003f // 0.3mm thick - match ring thickness
-        val lineDistance = 0.021f // Start just outside the 2cm ring
-        
-        // Horizontal line (right)
-        createCrosshairLine(lineLength, lineThickness, Position(lineDistance + lineLength/2, 0f, 0f), 0f)
-        // Horizontal line (left)
-        createCrosshairLine(lineLength, lineThickness, Position(-(lineDistance + lineLength/2), 0f, 0f), 0f)
-        // Vertical line (top)
-        createCrosshairLine(lineLength, lineThickness, Position(0f, 0f, -(lineDistance + lineLength/2)), 90f)
-        // Vertical line (bottom)
-        createCrosshairLine(lineLength, lineThickness, Position(0f, 0f, lineDistance + lineLength/2), 90f)
-        
-        android.util.Log.d("ReticleNode", "Created iOS-style reticle with crosshair")
+        android.util.Log.d("ReticleNode", "Created optimized iOS-style reticle: ring + dot")
     }
     
     private fun createCrosshairLine(length: Float, thickness: Float, position: Position, rotationDeg: Float) {
@@ -273,11 +195,7 @@ class ReticleNode(
                 // Very faded white when searching
                 outerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
                     Color.WHITE,
-                    0.4f // More transparent when searching
-                )
-                innerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.WHITE,
-                    0.5f
+                    0.4f
                 )
                 innerDot?.materialInstance = sceneView.materialLoader.createColorInstance(
                     Color.WHITE,
@@ -286,30 +204,22 @@ class ReticleNode(
                 android.util.Log.d("ReticleNode", "State: SEARCHING")
             }
             State.TRACKING -> {
-                // Semi-transparent white
+                // iOS style: Yellow reticle when actively measuring
                 outerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.WHITE,
-                    0.5f // Very transparent outer ring - hollow effect
-                )
-                innerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.WHITE,
-                    0.7f // Semi-transparent inner ring
+                    Color.rgb(255, 204, 0), // iOS yellow #FFCC00
+                    0.85f
                 )
                 innerDot?.materialInstance = sceneView.materialLoader.createColorInstance(
                     Color.WHITE,
-                    0.9f // Most solid for precision
+                    1.0f // White center dot for precision
                 )
                 android.util.Log.d("ReticleNode", "State: TRACKING")
             }
             State.SNAPPED -> {
-                // Bright green, semi-transparent (iOS snap indicator)
+                // iOS style: Green when snapped to vertex/edge
                 outerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.rgb(76, 217, 100), // iOS green
-                    0.7f
-                )
-                innerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.rgb(76, 217, 100),
-                    0.85f
+                    Color.rgb(52, 199, 89), // iOS green #34C759
+                    0.9f
                 )
                 innerDot?.materialInstance = sceneView.materialLoader.createColorInstance(
                     Color.GREEN,

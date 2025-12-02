@@ -123,3 +123,5 @@ secrets.properties
 .env.*
 logcat_file
 *.jpg
+ios-16-iphone-14-pro-measure-one-area.png
+.idea/deploymentTargetSelector.xml

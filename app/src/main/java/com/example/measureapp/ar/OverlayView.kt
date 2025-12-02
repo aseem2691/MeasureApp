@@ -27,6 +27,7 @@ class OverlayView @JvmOverloads constructor(
     var measurementManager: MeasurementManager? = null
     var arCamera: Camera? = null
     var liveLabelText: String? = null // For rubber-band label
+    var detectedRectangle: DetectedRectangle? = null // For rectangle overlay
     
     // Paint objects (reused for performance)
     private val labelBackgroundPaint = Paint().apply {
@@ -57,6 +58,22 @@ class OverlayView @JvmOverloads constructor(
     private val paddingHorizontal = dpToPx(12f)
     private val paddingVertical = dpToPx(6f)
     
+    // Rectangle overlay paint (iOS yellow bounding box)
+    private val rectanglePaint = Paint().apply {
+        color = Color.rgb(255, 204, 0) // iOS yellow #FFCC00
+        strokeWidth = dpToPx(8f) // Increased for better visibility
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+    
+    private val rectangleCornerPaint = Paint().apply {
+        color = Color.rgb(255, 204, 0)
+        strokeWidth = dpToPx(10f) // Increased for better visibility
+        strokeCap = Paint.Cap.ROUND
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+    
     // Track drawn label bounds to prevent overlaps
     private val drawnLabels = mutableListOf<RectF>()
     
@@ -68,6 +85,12 @@ class OverlayView @JvmOverloads constructor(
         
         // Clear previous frame's label positions
         drawnLabels.clear()
+        
+        // Draw detected rectangle overlay (if any)
+        detectedRectangle?.let { rect ->
+            android.util.Log.d("OverlayView", "onDraw: Drawing rectangle ${rect.sides[0]}m x ${rect.sides[1]}m")
+            drawRectangleOverlay(canvas, camera, rect)
+        }
         
         // Draw permanent measurement labels
         for (label in manager.labels) {
@@ -96,7 +119,8 @@ class OverlayView @JvmOverloads constructor(
         camera: Camera,
         worldPosition: Position,
         text: String,
-        isLive: Boolean = false
+        isLive: Boolean = false,
+        useYellowBackground: Boolean = false
     ) {
         // Convert 3D world position to 2D screen coordinates
         val screenCoords = worldToScreenPoint(camera, worldPosition) ?: return
@@ -134,14 +158,19 @@ class OverlayView @JvmOverloads constructor(
         // Store this label's bounds
         drawnLabels.add(rectF)
         
-        // Make live label slightly transparent
-        if (isLive) {
-            labelBackgroundPaint.alpha = (0.7f * 255).toInt()
+        // Choose background color (yellow for rectangles, white for measurements)
+        val bgPaint = if (useYellowBackground) {
+            Paint(labelBackgroundPaint).apply {
+                color = Color.rgb(255, 204, 0) // iOS yellow
+                alpha = (0.95f * 255).toInt()
+            }
         } else {
-            labelBackgroundPaint.alpha = (0.9f * 255).toInt()
+            labelBackgroundPaint.apply {
+                alpha = if (isLive) (0.7f * 255).toInt() else (0.9f * 255).toInt()
+            }
         }
         
-        canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, labelBackgroundPaint)
+        canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, bgPaint)
         
         // Draw text (centered)
         val textX = screenCoords.x
@@ -202,14 +231,110 @@ class OverlayView @JvmOverloads constructor(
         val ndcX = clipPos[0] / clipPos[3]
         val ndcY = clipPos[1] / clipPos[3]
         
-        // Check if point is outside the view frustum
-        if (ndcX < -1f || ndcX > 1f || ndcY < -1f || ndcY > 1f) return null
+        // Check if point is outside the view frustum (use generous margin for rectangles)
+        if (ndcX < -2.5f || ndcX > 2.5f || ndcY < -2.5f || ndcY > 2.5f) return null
         
-        // Convert NDC to screen coordinates
-        val screenX = (ndcX + 1f) * width / 2f
-        val screenY = (1f - ndcY) * height / 2f // Y is inverted in screen space
+        // Convert NDC to screen coordinates (clamp to screen bounds)
+        val screenX = ((ndcX + 1f) * width / 2f).coerceIn(0f, width.toFloat())
+        val screenY = ((1f - ndcY) * height / 2f).coerceIn(0f, height.toFloat()) // Y is inverted in screen space
         
         return PointF(screenX, screenY)
+    }
+    
+    /**
+     * Draw yellow bounding box overlay for detected rectangle
+     * iOS Measure style with corner markers and dimension labels
+     */
+    private fun drawRectangleOverlay(canvas: Canvas, camera: Camera, rectangle: DetectedRectangle) {
+        android.util.Log.d("OverlayView", "drawRectangleOverlay called")
+        
+        // Project all 4 corners to screen space
+        val screenCorners = rectangle.corners.mapNotNull { corner ->
+            worldToScreenPoint(camera, corner)
+        }
+        
+        android.util.Log.d("OverlayView", "Projected ${screenCorners.size}/4 corners for drawing")
+        
+        // Draw whatever corners we can (at least 2 needed for a line)
+        if (screenCorners.size < 2) {
+            android.util.Log.w("OverlayView", "Not drawing - need at least 2 corners, got ${screenCorners.size}")
+            return
+        }
+        
+        android.util.Log.d("OverlayView", "✓ Drawing rectangle with ${screenCorners.size} visible corners!")
+        
+        // Draw bounding box lines (only between visible corners)
+        if (screenCorners.size == 4) {
+            // All 4 corners visible - draw complete box
+            for (i in 0 until 4) {
+                val start = screenCorners[i]
+                val end = screenCorners[(i + 1) % 4]
+                canvas.drawLine(start.x, start.y, end.x, end.y, rectanglePaint)
+            }
+        } else {
+            // Partial rectangle - just draw lines between consecutive visible corners
+            for (i in 0 until screenCorners.size - 1) {
+                canvas.drawLine(screenCorners[i].x, screenCorners[i].y, 
+                               screenCorners[i+1].x, screenCorners[i+1].y, rectanglePaint)
+            }
+        }
+        
+        // Draw corner markers (only for complete rectangles with all 4 corners)
+        if (screenCorners.size == 4) {
+            val cornerLength = dpToPx(12f)
+            for (i in 0 until 4) {
+                val corner = screenCorners[i]
+                val prev = screenCorners[(i - 1 + 4) % 4]
+                val next = screenCorners[(i + 1) % 4]
+                
+                // Calculate directions for L-shape
+                val dx1 = (prev.x - corner.x) * 0.1f
+                val dy1 = (prev.y - corner.y) * 0.1f
+                val dx2 = (next.x - corner.x) * 0.1f
+                val dy2 = (next.y - corner.y) * 0.1f
+                
+                // Draw L-shape marker
+                canvas.drawLine(corner.x, corner.y, corner.x + dx1, corner.y + dy1, rectangleCornerPaint)
+                canvas.drawLine(corner.x, corner.y, corner.x + dx2, corner.y + dy2, rectangleCornerPaint)
+            }
+        }
+        
+        // Draw dimension labels and area (only for complete rectangles)
+        if (screenCorners.size == 4) {
+            val sidesText = rectangle.sides.map { side ->
+                val cm = (side * 100).toInt()
+                if (cm > 100) {
+                    String.format("%.1f m", side)
+                } else {
+                    "$cm cm"
+                }
+            }
+            
+            for (i in 0 until 4) {
+                val start = screenCorners[i]
+                val end = screenCorners[(i + 1) % 4]
+                val midX = (start.x + end.x) / 2f
+                val midY = (start.y + end.y) / 2f
+                val midPoint = PointF(midX, midY)
+                
+                drawLabel(canvas, camera, Position(
+                    rectangle.corners[i].x + (rectangle.corners[(i + 1) % 4].x - rectangle.corners[i].x) / 2f,
+                    rectangle.corners[i].y + (rectangle.corners[(i + 1) % 4].y - rectangle.corners[i].y) / 2f,
+                    rectangle.corners[i].z + (rectangle.corners[(i + 1) % 4].z - rectangle.corners[i].z) / 2f
+                ), sidesText[i], useYellowBackground = true)
+            }
+            
+            // Draw area label at center
+            val centerX = screenCorners.map { it.x }.average().toFloat()
+            val centerY = screenCorners.map { it.y }.average().toFloat()
+            val center3D = Position(
+                rectangle.corners.map { it.x }.average().toFloat(),
+                rectangle.corners.map { it.y }.average().toFloat(),
+                rectangle.corners.map { it.z }.average().toFloat()
+            )
+            val areaText = String.format("%.2f m²", rectangle.area)
+            drawLabel(canvas, camera, center3D, areaText, useYellowBackground = true)
+        }
     }
     
     /**

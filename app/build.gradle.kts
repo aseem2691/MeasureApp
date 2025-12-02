@@ -98,6 +98,9 @@ dependencies {
     // Material Design
     implementation("com.google.android.material:material:1.12.0")
     implementation(libs.androidx.compose.material.icons.extended)
+    
+    // CardView for iOS-style UI
+    implementation("androidx.cardview:cardview:1.0.0")
 
     // Utilities
     implementation("com.jakewharton.timber:timber:5.0.1")

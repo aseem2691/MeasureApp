@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Original colors -->
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>
     <color name="purple_700">#FF3700B3</color>
@@ -7,4 +8,34 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    
+    <!-- iOS System Colors -->
+    <color name="ios_blue">#007AFF</color>
+    <color name="ios_green">#34C759</color>
+    <color name="ios_yellow">#FFCC00</color>
+    <color name="ios_orange">#FF9500</color>
+    <color name="ios_red">#FF3B30</color>
+    <color name="ios_gray">#8E8E93</color>
+    <color name="ios_gray2">#AEAEB2</color>
+    <color name="ios_gray3">#C7C7CC</color>
+    <color name="ios_gray4">#D1D1D6</color>
+    <color name="ios_gray5">#E5E5EA</color>
+    <color name="ios_gray6">#F2F2F7</color>
+    
+    <!-- iOS Label Colors -->
+    <color name="ios_label">#1C1C1E</color>
+    <color name="ios_secondary_label">#3C3C43</color>
+    <color name="ios_tertiary_label">#3C3C4399</color>
+    
+    <!-- iOS Background Colors -->
+    <color name="ios_background">#FFFFFF</color>
+    <color name="ios_secondary_background">#F2F2F7</color>
+    <color name="ios_tertiary_background">#FFFFFF</color>
+    
+    <!-- AR Measurement Colors -->
+    <color name="measurement_label_bg">#F0FFFFFF</color>
+    <color name="measurement_text">#1C1C1E</color>
+    <color name="measurement_live">#FFCC00</color>
+    <color name="reticle_tracking">#FFFFFF</color>
+    <color name="reticle_snapped">#34C759</color>
 </resources>

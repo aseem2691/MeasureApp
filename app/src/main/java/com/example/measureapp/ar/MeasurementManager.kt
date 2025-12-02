@@ -86,11 +86,11 @@ class MeasurementManager(
     
     // Distance smoothing for consistent measurements
     private var smoothedDistance: Float = 0f
-    private val distanceSmoothingFactor = 0.3f // Smooth distance changes
+    private val distanceSmoothingFactor = 0.08f // Ultra-heavy smoothing for rock-solid measurements
     
-    // Snapping thresholds - Reduced for less aggressive auto-snap
-    private val VERTEX_SNAP_DISTANCE = 0.05f // 5cm for vertex snapping (less aggressive)
-    private val EDGE_SNAP_DISTANCE = 0.03f   // 3cm for edge snapping (more precise)
+    // Snapping thresholds - iOS precision levels
+    private val VERTEX_SNAP_DISTANCE = 0.03f // 3cm vertex snapping (iOS precision)
+    private val EDGE_SNAP_DISTANCE = 0.02f   // 2cm edge snapping (iOS precision)
 
     /**
      * Perform intelligent hit testing with vertex and edge snapping
@@ -219,8 +219,8 @@ class MeasurementManager(
             
             SphereNode(
                 engine = sceneView.engine,
-                radius = 0.004f, // 4mm - ultra-tiny crisp dot (iOS style)
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // White like iOS
+                radius = 0.003f, // 3mm - visible but precise
+                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Pure white
             ).apply {
                 parent = anchorNode
             }
@@ -255,15 +255,16 @@ class MeasurementManager(
         if (distance < 0.001f) return // Too short to render
 
         if (tempLineNode == null) {
-            // Create bright yellow/gold material for visibility
+            // iOS style: bright yellow for active measurement
             val yellowMaterial = sceneView.materialLoader.createColorInstance(
-                android.graphics.Color.rgb(255, 215, 0) // Bright gold
+                android.graphics.Color.rgb(255, 204, 0), // iOS yellow #FFCC00
+                0.9f // High opacity for visibility
             )
             tempLineNode = CylinderNode(
                 engine = sceneView.engine,
-                radius = 0.001f, // 1mm - ultra-thin guide line (iOS style)
+                radius = 0.001f, // 1mm - thin but visible
                 height = 1.0f,
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.6f) // Semi-transparent white
+                materialInstance = yellowMaterial
             ).apply {
                 isShadowCaster = false
                 isShadowReceiver = false
@@ -290,7 +291,7 @@ class MeasurementManager(
 
         val lineNode = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.0015f, // 1.5mm - laser-thin line (iOS AR Ruler style)
+            radius = 0.002f, // 2mm - visible iOS style
             height = 1.0f,
             materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Pure white
         ).apply {
@@ -401,8 +402,9 @@ class MeasurementManager(
         currentSmartHit = SmartHit.None
         smoothedDistance = 0f // Reset smoothing
         
-        // CRITICAL FIX: Clear corner nodes to prevent snapping to old measurement points
-        cornerNodes.clear() // This prevents diagonal connections and new measurement connections
+        // CRITICAL FIX: Clear snapping data structures to prevent connections to old measurements
+        cornerNodes.clear() // Prevents vertex snapping to old points
+        lineSegments.clear() // Prevents edge snapping to old lines (THIS IS THE DIAGONAL FIX)
         
         // Remove the temporary line
         tempLineNode?.let {
@@ -412,19 +414,16 @@ class MeasurementManager(
         tempLineNode = null
         currentLivePosition = null
         
-        // Show summary of all measurement chains
-        if (measurementChains.isNotEmpty()) {
-            val summary = buildString {
-                append("Measurements: ")
-                measurementChains.forEachIndexed { index, chain ->
-                    val chainTotal = chain.segments.sum()
-                    append("${index + 1}: ${formatDistance(chainTotal)}")
-                    if (index < measurementChains.size - 1) append(" | ")
-                }
+        // Show summary based on current state
+        if (anchors.isNotEmpty()) {
+            val total = segmentDistances.sum()
+            if (total > 0f) {
+                onMeasurementChanged("Done: ${formatDistance(total)}\nTap + for new")
+            } else {
+                onMeasurementChanged("Tap + for new measurement")
             }
-            onMeasurementChanged("$summary\nTap + for new")
         } else {
-            onMeasurementChanged("Tap + to start new measurement")
+            onMeasurementChanged("Tap + to start")
         }
     }
     
@@ -435,25 +434,40 @@ class MeasurementManager(
         anchors.lastOrNull()?.detach()
         anchors.removeLastOrNull()
         
-        // Remove last node (includes line and sphere)
+        // Remove last anchor node
         nodes.lastOrNull()?.let { node ->
             sceneView.removeChildNode(node)
             node.destroy()
         }
         nodes.removeLastOrNull()
+        cornerNodes.removeLastOrNull()
         
-        // Remove last segment distance and label
-        segmentDistances.removeLastOrNull()
-        labels.removeLastOrNull()
+        // Remove last line if exists
+        if (lineNodes.isNotEmpty()) {
+            lineNodes.lastOrNull()?.let { node ->
+                sceneView.removeChildNode(node)
+                node.destroy()
+            }
+            lineNodes.removeLastOrNull()
+            lineSegments.removeLastOrNull()
+            segmentDistances.removeLastOrNull()
+            labels.removeLastOrNull()
+        }
         
-        // Update lastAnchor
+        // Update state
         lastAnchor = anchors.lastOrNull()
+        smoothedDistance = 0f
         
         if (anchors.isEmpty()) {
             hasStartedMeasurement = false
-            onMeasurementChanged("Move to start")
+            onMeasurementChanged("Point at surface and tap + to start")
         } else {
-            onMeasurementChanged("Tap + to continue")
+            val total = segmentDistances.sum()
+            if (total > 0f) {
+                onMeasurementChanged("Total: ${formatDistance(total)}")
+            } else {
+                onMeasurementChanged("Tap + to continue")
+            }
         }
     }
     
@@ -508,11 +522,11 @@ class MeasurementManager(
     }
     
     fun clear() {
-        // Remove all anchors
+        // CRITICAL: Detach all anchors first
         anchors.forEach { it.detach() }
         anchors.clear()
         
-        // Remove all nodes from scene
+        // CRITICAL: Remove and destroy all anchor nodes
         nodes.forEach { node ->
             sceneView.removeChildNode(node)
             node.destroy()
@@ -520,16 +534,21 @@ class MeasurementManager(
         nodes.clear()
         cornerNodes.clear()
         
-        // Clear line nodes
-        lineNodes.forEach { sceneView.removeChildNode(it) }
+        // CRITICAL: Remove and destroy all line nodes
+        lineNodes.forEach { node ->
+            sceneView.removeChildNode(node)
+            node.destroy()
+        }
         lineNodes.clear()
         
-        // Clear temp line
+        // CRITICAL: Remove and destroy temp line
         tempLineNode?.let {
             sceneView.removeChildNode(it)
             it.destroy()
         }
         tempLineNode = null
+        
+        // Clear all state
         lastAnchor = null
         segmentDistances.clear()
         lineSegments.clear()
@@ -537,10 +556,10 @@ class MeasurementManager(
         currentLivePosition = null
         measurementChains.clear()
         currentChain = MeasurementChain()
-        cornerNodes.clear() // Clear snapping points
         isMeasuring = true
         hasStartedMeasurement = false
         currentSmartHit = SmartHit.None
+        smoothedDistance = 0f
         
         onMeasurementChanged("Point at surface and tap + to start")
     }
