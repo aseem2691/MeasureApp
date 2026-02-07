@@ -2,6 +2,7 @@ package com.example.measureapp.ar
 
 import android.graphics.Color
 import com.google.ar.core.Pose
+import com.google.android.filament.MaterialInstance
 import dev.romainguy.kotlin.math.Float3
 import dev.romainguy.kotlin.math.Quaternion
 import dev.romainguy.kotlin.math.normalize
@@ -12,236 +13,185 @@ import io.github.sceneview.node.SphereNode
 import io.github.sceneview.node.Node
 import kotlin.math.sqrt
 import kotlin.math.sin
-import kotlin.math.cos
-import kotlin.math.atan2
 
 /**
- * Professional 3D Reticle (iOS AR Ruler style)
- * 
+ * Professional iOS-style 3D Reticle
+ *
  * Visual Design:
- * - Outer Ring: Thin white cylinder (4cm radius) that lies flat on detected surfaces
- * - Inner Dot: Small white sphere (0.5cm radius) at the center
- * 
+ * - Outer Ring: Thin cylinder (2cm radius) flat on detected surfaces
+ * - Inner Dot: Small white sphere at center for precision targeting
+ *
  * Behavior:
- * - Smoothly interpolates position and rotation to follow hit test results
- * - Adapts to surface orientation (flat on floors, vertical on walls)
- * - Changes appearance based on state:
- *   - SEARCHING: Faded white with subtle pulse animation
- *   - TRACKING: Solid white, stable
- *   - SNAPPED: Bright green with scale bump (haptic feedback)
+ * - Adaptive smoothing: faster when far, slower when close for precision
+ * - Pre-cached materials avoid per-frame allocation
+ * - State-based appearance: SEARCHING (faded pulse), TRACKING (yellow), SNAPPED (green)
  */
 class ReticleNode(
     private val sceneView: ARSceneView
 ) : Node(sceneView.engine) {
-    
+
     enum class State {
-        SEARCHING,  // No surface detected
-        TRACKING,   // Surface detected, normal tracking
-        SNAPPED     // Snapped to vertex/edge
+        SEARCHING,
+        TRACKING,
+        SNAPPED
     }
-    
+
     private var outerRing: CylinderNode? = null
-    private var innerRing: CylinderNode? = null // iOS-style inner ring
-    private val ringSegments = mutableListOf<CylinderNode>() // For hollow ring
     private var innerDot: SphereNode? = null
     private var currentState = State.SEARCHING
-    
-    // Smooth interpolation state - Much higher smoothing to reduce wobble
+
+    // Pre-cached materials for performance (avoid creating every frame)
+    private lateinit var ringSearching: MaterialInstance
+    private lateinit var ringTracking: MaterialInstance
+    private lateinit var ringSnapped: MaterialInstance
+    private lateinit var dotSearching: MaterialInstance
+    private lateinit var dotTracking: MaterialInstance
+    private lateinit var dotSnapped: MaterialInstance
+
+    // Smooth interpolation
     private var targetPosition: Position = Position(0f, 0f, 0f)
     private var targetRotation: Quaternion = Quaternion()
-    private val positionLerpFactor = 0.15f // Very smooth - reduces wobble significantly
-    private val rotationLerpFactor = 0.10f // Very smooth rotation - no jitter
-    
+    private val positionLerpFactor = 0.15f
+    private val rotationLerpFactor = 0.10f
+
     // Animation state
     private var animationTime = 0f
     private val pulseSpeed = 2.0f
-    
+
     init {
+        createMaterials()
         createReticleGeometry()
-        isVisible = false // Start hidden until first hit
+        isVisible = false
     }
-    
+
     /**
-     * Create iOS Measure style reticle - OPTIMIZED for GPU memory
-     * - Single thin ring (hollow appearance via thin cylinder)
-     * - Small center dot for precision
+     * Pre-cache all materials at init to avoid per-frame allocation
      */
+    private fun createMaterials() {
+        val iosYellow = Color.rgb(255, 204, 0)
+        val iosGreen = Color.rgb(52, 199, 89)
+
+        ringSearching = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.4f)
+        ringTracking = sceneView.materialLoader.createColorInstance(iosYellow, 0.85f)
+        ringSnapped = sceneView.materialLoader.createColorInstance(iosGreen, 0.9f)
+
+        dotSearching = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.5f)
+        dotTracking = sceneView.materialLoader.createColorInstance(Color.WHITE, 1.0f)
+        dotSnapped = sceneView.materialLoader.createColorInstance(Color.GREEN, 1.0f)
+    }
+
     private fun createReticleGeometry() {
-        // Outer ring - thin cylinder creates hollow appearance
-        // More GPU-efficient than 36 segments
+        // Outer ring — thin cylinder for hollow ring appearance
         outerRing = CylinderNode(
             engine = sceneView.engine,
             radius = 0.020f,  // 2cm radius
-            height = 0.001f, // 1mm thickness - thin outline
-            materialInstance = sceneView.materialLoader.createColorInstance(
-                Color.WHITE,
-                0.85f // Semi-transparent for iOS style
-            )
+            height = 0.001f,  // 1mm thickness
+            materialInstance = ringSearching
         ).apply {
             isShadowCaster = false
             isShadowReceiver = false
             isVisible = true
-            // Rotate to lie flat on surface
             quaternion = Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 90f * Math.PI.toFloat() / 180f)
             parent = this@ReticleNode
         }
-        
-        innerRing = null // Not needed - keep it simple
-        
-        // Center Dot - 2mm for targeting (visible but minimal)
+
+        // Center dot — 2mm for targeting
         innerDot = SphereNode(
             engine = sceneView.engine,
-            radius = 0.002f, // 2mm radius
-            materialInstance = sceneView.materialLoader.createColorInstance(
-                Color.WHITE,
-                1.0f
-            )
+            radius = 0.002f,
+            materialInstance = dotSearching
         ).apply {
             isShadowCaster = false
             isShadowReceiver = false
             isVisible = true
             parent = this@ReticleNode
         }
-        
-        android.util.Log.d("ReticleNode", "Created optimized iOS-style reticle: ring + dot")
     }
-    
-    private fun createCrosshairLine(length: Float, thickness: Float, position: Position, rotationDeg: Float) {
-        CylinderNode(
-            engine = sceneView.engine,
-            radius = thickness,
-            height = length,
-            materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.7f) // Semi-transparent
-        ).apply {
-            isShadowCaster = false
-            isShadowReceiver = false
-            this.position = position
-            // Rotate to horizontal, then rotate around Y axis for orientation
-            val flatRot = Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 90f * Math.PI.toFloat() / 180f)
-            val orientRot = Quaternion.fromAxisAngle(Float3(0f, 1f, 0f), rotationDeg * Math.PI.toFloat() / 180f)
-            quaternion = orientRot * flatRot
-            parent = this@ReticleNode
-        }
-    }
-    
-    /**
-     * Update the reticle's target position and state
-     * Call this every frame with the current hit test result
-     * 
-     * @param pose The target pose from hit testing (null if no surface detected)
-     * @param state The current interaction state
-     */
+
     fun update(pose: Pose?, state: State = State.TRACKING) {
         if (pose == null) {
-            // No surface detected
             currentState = State.SEARCHING
             isVisible = false
             return
         }
-        
-        // Update state and make visible
+
+        val previousState = currentState
         currentState = state
         isVisible = true
-        
-        // Set interpolation targets
+
         targetPosition = Position(pose.tx(), pose.ty(), pose.tz())
-        
-        // Extract rotation from pose and apply surface alignment correction
-        val poseRotation = Quaternion(pose.qx(), pose.qy(), pose.qz(), pose.qw())
-        
-        // Keep the reticle "lying flat" on the surface by maintaining the pose rotation
-        // (The outerRing already has a 90° X-rotation baked in to lie flat)
-        targetRotation = poseRotation
-        
-        // Update visual appearance based on state
-        updateAppearance()
+        targetRotation = Quaternion(pose.qx(), pose.qy(), pose.qz(), pose.qw())
+
+        // Only swap materials on state change (avoid per-frame allocation)
+        if (previousState != currentState) {
+            updateAppearance()
+        }
     }
-    
-    /**
-     * Smooth interpolation - call this every frame to animate towards target
-     */
+
     fun smoothUpdate(deltaTime: Float = 0.016f) {
         if (!isVisible) return
-        
-        // Lerp position
-        position = lerp(position, targetPosition, positionLerpFactor)
-        
-        // Slerp rotation (smooth spherical interpolation)
-        quaternion = slerp(quaternion, targetRotation, rotationLerpFactor)
-        
-        // Animate pulse effect for SEARCHING state
-        if (currentState == State.SEARCHING) {
-            animationTime += deltaTime * pulseSpeed
-            val pulse = 0.7f + 0.3f * sin(animationTime)
-            scale = Float3(pulse, pulse, pulse)
-        } else {
-            // Reset animation time and scale
-            animationTime = 0f
-            if (currentState == State.SNAPPED) {
-                scale = Float3(1.2f, 1.2f, 1.2f) // Slightly larger when snapped
-            } else {
+
+        // Adaptive lerp: faster when far, slower when close for precision
+        val distToTarget = length(targetPosition - position)
+        val adaptivePosLerp = when {
+            distToTarget > 0.05f -> 0.3f
+            distToTarget < 0.01f -> 0.12f
+            else -> positionLerpFactor
+        }
+        val adaptiveRotLerp = when {
+            distToTarget > 0.05f -> 0.25f
+            distToTarget < 0.01f -> 0.08f
+            else -> rotationLerpFactor
+        }
+
+        position = lerp(position, targetPosition, adaptivePosLerp)
+        quaternion = slerp(quaternion, targetRotation, adaptiveRotLerp)
+
+        when (currentState) {
+            State.SEARCHING -> {
+                animationTime += deltaTime * pulseSpeed
+                val pulse = 0.7f + 0.3f * sin(animationTime)
+                scale = Float3(pulse, pulse, pulse)
+            }
+            State.TRACKING -> {
+                animationTime = 0f
                 scale = Float3(1.0f, 1.0f, 1.0f)
+            }
+            State.SNAPPED -> {
+                animationTime = 0f
+                scale = Float3(1.2f, 1.2f, 1.2f)
             }
         }
     }
-    
-    /**
-     * Update colors and appearance based on current state
-     * All states use semi-transparency for cleaner look
-     */
+
     private fun updateAppearance() {
         when (currentState) {
             State.SEARCHING -> {
-                // Very faded white when searching
-                outerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.WHITE,
-                    0.4f
-                )
-                innerDot?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.WHITE,
-                    0.5f
-                )
-                android.util.Log.d("ReticleNode", "State: SEARCHING")
+                outerRing?.materialInstance = ringSearching
+                innerDot?.materialInstance = dotSearching
             }
             State.TRACKING -> {
-                // iOS style: Yellow reticle when actively measuring
-                outerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.rgb(255, 204, 0), // iOS yellow #FFCC00
-                    0.85f
-                )
-                innerDot?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.WHITE,
-                    1.0f // White center dot for precision
-                )
-                android.util.Log.d("ReticleNode", "State: TRACKING")
+                outerRing?.materialInstance = ringTracking
+                innerDot?.materialInstance = dotTracking
             }
             State.SNAPPED -> {
-                // iOS style: Green when snapped to vertex/edge
-                outerRing?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.rgb(52, 199, 89), // iOS green #34C759
-                    0.9f
-                )
-                innerDot?.materialInstance = sceneView.materialLoader.createColorInstance(
-                    Color.GREEN,
-                    1.0f
-                )
-                android.util.Log.d("ReticleNode", "State: SNAPPED")
+                outerRing?.materialInstance = ringSnapped
+                innerDot?.materialInstance = dotSnapped
             }
         }
     }
-    
+
     // --- Helper Math Functions ---
-    
+
+    private fun length(v: Float3) = sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+
     private fun lerp(start: Position, end: Position, t: Float): Position {
         return start + ((end - start) * t)
     }
-    
+
     private fun slerp(start: Quaternion, end: Quaternion, t: Float): Quaternion {
-        // Simplified slerp for smooth rotation
-        // For production, you might want to use a more robust implementation
         val dot = start.x * end.x + start.y * end.y + start.z * end.z + start.w * end.w
-        
-        // If quaternions are very close, just lerp
+
         if (kotlin.math.abs(dot) > 0.9995f) {
             val result = Quaternion(
                 start.x + t * (end.x - start.x),
@@ -251,15 +201,14 @@ class ReticleNode(
             )
             return normalize(result)
         }
-        
-        // Standard slerp
+
         val theta = kotlin.math.acos(kotlin.math.abs(dot))
         val sinTheta = sin(theta.toDouble()).toFloat()
         val a = sin((1.0 - t) * theta.toDouble()).toFloat() / sinTheta
         val b = sin(t * theta.toDouble()).toFloat() / sinTheta
-        
+
         val adjustedEnd = if (dot < 0) Quaternion(-end.x, -end.y, -end.z, -end.w) else end
-        
+
         return Quaternion(
             a * start.x + b * adjustedEnd.x,
             a * start.y + b * adjustedEnd.y,
@@ -267,7 +216,7 @@ class ReticleNode(
             a * start.w + b * adjustedEnd.w
         )
     }
-    
+
     private fun normalize(q: Quaternion): Quaternion {
         val mag = sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
         return if (mag > 0.0001f) {

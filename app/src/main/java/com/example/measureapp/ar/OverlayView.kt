@@ -31,18 +31,18 @@ class OverlayView @JvmOverloads constructor(
     
     // Paint objects (reused for performance)
     private val labelBackgroundPaint = Paint().apply {
-        color = Color.WHITE
+        color = Color.rgb(255, 204, 0) // iOS yellow
         alpha = (0.9f * 255).toInt()
         style = Paint.Style.FILL
         isAntiAlias = true
-        setShadowLayer(4f, 0f, 2f, Color.LTGRAY) // Clean drop shadow
+        setShadowLayer(4f, 0f, 2f, Color.argb(60, 0, 0, 0)) // Subtle shadow
     }
-    
+
     private val labelTextPaint = Paint().apply {
-        color = Color.BLACK
-        textSize = dpToPx(14f)
+        color = Color.WHITE
+        textSize = dpToPx(15f)
         textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         isAntiAlias = true
     }
     
@@ -88,7 +88,6 @@ class OverlayView @JvmOverloads constructor(
         
         // Draw detected rectangle overlay (if any)
         detectedRectangle?.let { rect ->
-            android.util.Log.d("OverlayView", "onDraw: Drawing rectangle ${rect.sides[0]}m x ${rect.sides[1]}m")
             drawRectangleOverlay(canvas, camera, rect)
         }
         
@@ -246,22 +245,13 @@ class OverlayView @JvmOverloads constructor(
      * iOS Measure style with corner markers and dimension labels
      */
     private fun drawRectangleOverlay(canvas: Canvas, camera: Camera, rectangle: DetectedRectangle) {
-        android.util.Log.d("OverlayView", "drawRectangleOverlay called")
-        
         // Project all 4 corners to screen space
         val screenCorners = rectangle.corners.mapNotNull { corner ->
             worldToScreenPoint(camera, corner)
         }
         
-        android.util.Log.d("OverlayView", "Projected ${screenCorners.size}/4 corners for drawing")
-        
         // Draw whatever corners we can (at least 2 needed for a line)
-        if (screenCorners.size < 2) {
-            android.util.Log.w("OverlayView", "Not drawing - need at least 2 corners, got ${screenCorners.size}")
-            return
-        }
-        
-        android.util.Log.d("OverlayView", "✓ Drawing rectangle with ${screenCorners.size} visible corners!")
+        if (screenCorners.size < 2) return
         
         // Draw bounding box lines (only between visible corners)
         if (screenCorners.size == 4) {

@@ -1,6 +1,8 @@
 package com.example.measureapp.ar
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -53,6 +55,7 @@ class MeasureActivity : AppCompatActivity() {
     private lateinit var measurementCapture: MeasurementCapture
     private var lastSmartHitState: SmartHit = SmartHit.None
     private var detectedRectangle: DetectedRectangle? = null
+    private var hasFoundSurface = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -149,7 +152,6 @@ class MeasureActivity : AppCompatActivity() {
         // Initialize Professional 3D Reticle AFTER SceneView is configured
         reticle = ReticleNode(sceneView)
         sceneView.addChildNode(reticle)
-        Log.d(TAG, "Professional Reticle initialized and added to scene")
         
         // Initial prompt
         promptText.text = "Move phone to detect surface"
@@ -169,50 +171,28 @@ class MeasureActivity : AppCompatActivity() {
                 // 1. Perform Hit Test with EDGE DETECTION priority
                 // Priority: Plane (inside) > DepthPoint (edges!) > Point > Plane (outside)
                 val hits = frame.hitTest(centerX, centerY)
-                
-                // Log what we're seeing for debugging
-                if (hits.isNotEmpty()) {
-                    val types = hits.map { hit ->
-                        when (hit.trackable) {
-                            is com.google.ar.core.Plane -> "Plane"
-                            is com.google.ar.core.DepthPoint -> "DepthPoint"
-                            is com.google.ar.core.Point -> "Point"
-                            else -> "Unknown"
-                        }
-                    }.distinct()
-                    Log.d(TAG, "Hit types available: ${types.joinToString()}")
-                }
-                
+
                 // PRIORITY 1: Plane hits inside polygon (most stable)
                 var hitResult = hits.firstOrNull { hit ->
                     val trackable = hit.trackable
-                    trackable is com.google.ar.core.Plane && 
+                    trackable is com.google.ar.core.Plane &&
                     trackable.trackingState == com.google.ar.core.TrackingState.TRACKING &&
                     trackable.isPoseInPolygon(hit.hitPose)
                 }
-                if (hitResult != null) Log.d(TAG, "Using Plane hit (inside polygon) ✓")
-                
-                // PRIORITY 2: DepthPoint (ToF sensor) - good for edges but can be noisy
+
+                // PRIORITY 2: DepthPoint (ToF sensor)
                 if (hitResult == null) {
                     hitResult = hits.firstOrNull { hit ->
                         hit.trackable is com.google.ar.core.DepthPoint
                     }
-                    if (hitResult != null) Log.d(TAG, "Using DepthPoint (ToF)")
                 }
-                
-                // PRIORITY 3: Feature points (fallback for surfaces without plane detection)
+
+                // PRIORITY 3: Feature points (fallback)
                 if (hitResult == null) {
                     hitResult = hits.firstOrNull { hit ->
                         hit.trackable is com.google.ar.core.Point &&
                         hit.trackable.trackingState == com.google.ar.core.TrackingState.TRACKING
                     }
-                    if (hitResult != null) Log.d(TAG, "Using feature Point")
-                }
-                
-
-                
-                if (hitResult == null) {
-                    Log.d(TAG, "No valid hit found from ${hits.size} hits")
                 }
                 
                 // Validate distance from camera (max 10m for better range)
@@ -223,23 +203,10 @@ class MeasureActivity : AppCompatActivity() {
                     val dy = hitPose.ty() - cameraPose.ty()
                     val dz = hitPose.tz() - cameraPose.tz()
                     val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                    // Only log distance occasionally to reduce spam
-                    if (frame.timestamp % 30L == 0L) {
-                        Log.d(TAG, "Hit distance: ${distance}m")
-                    }
                     if (distance <= 10.0f && distance >= 0.1f) hit else null // Allow 10cm to 10m
                 }
                 
                 lastHitResult = validHitResult
-                
-                // Monitor tracking quality
-                if (frame.timestamp % 60L == 0L) {
-                    val trackingState = camera.trackingState
-                    val trackingReason = camera.trackingFailureReason
-                    if (trackingState != com.google.ar.core.TrackingState.TRACKING) {
-                        Log.w(TAG, "Tracking quality: $trackingState, reason: $trackingReason")
-                    }
-                }
                 
                 // 2. UPDATE THE MANAGER - This performs smart hit testing and updates rubber band
                 measurementManager.onUpdate(validHitResult)
@@ -257,31 +224,21 @@ class MeasureActivity : AppCompatActivity() {
                 
                 if (smartPose != null) {
                     reticle.update(smartPose, reticleState)
-                    Log.d(TAG, "Reticle updated with pose at (${smartPose.tx()}, ${smartPose.ty()}, ${smartPose.tz()})")
                 } else {
-                    // No surface detected - show reticle 1m in front of camera
                     val cameraPose = camera.pose
                     val forwardPose = cameraPose.compose(Pose.makeTranslation(0f, 0f, -1.0f))
                     reticle.update(forwardPose, ReticleNode.State.SEARCHING)
-                    Log.d(TAG, "No hit - showing reticle in SEARCHING mode")
                 }
                 reticle.smoothUpdate(0.016f) // ~60 FPS
                 
                 // 5. RECTANGLE AUTO-DETECTION (scan periodically)
-                if (frame.timestamp % 15L == 0L) { // Check every 15 frames (~0.25s at 60fps)
+                if (frame.timestamp % 15L == 0L) {
                     detectRectanglesInView(frame)
-                    if (detectedRectangle != null) {
-                        Log.d(TAG, "Rectangle detected! Sending to overlay")
-                    }
                 }
-                
+
                 // 6. Update overlay for 3D label rendering (includes rectangle overlay)
                 overlayView.arCamera = camera
-                val currentRectangle = detectedRectangle
-                overlayView.detectedRectangle = currentRectangle
-                if (currentRectangle != null) {
-                    Log.d(TAG, "Setting overlay rectangle: ${currentRectangle.sides[0]}m x ${currentRectangle.sides[1]}m")
-                }
+                overlayView.detectedRectangle = detectedRectangle
                 overlayView.postInvalidate()
                 
                 // 7. Monitor tracking quality and warn user
@@ -389,6 +346,8 @@ class MeasureActivity : AppCompatActivity() {
             clearCard.visibility = android.view.View.GONE
             captureButtonCard.visibility = android.view.View.GONE
             helpHint.visibility = android.view.View.VISIBLE
+            // Re-show plane renderer after clearing
+            sceneView.planeRenderer.isVisible = true
             overlayView.postInvalidate()
         }
         
@@ -397,11 +356,11 @@ class MeasureActivity : AppCompatActivity() {
                 try {
                     Toast.makeText(this@MeasureActivity, "Capturing...", Toast.LENGTH_SHORT).show()
                     val uri = measurementCapture.captureAndSave()
-                    
+
                     if (uri != null) {
                         haptic.success()
                         Toast.makeText(this@MeasureActivity, "Saved to gallery", Toast.LENGTH_SHORT).show()
-                        
+
                         // Offer to share
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                             type = "image/jpeg"
@@ -420,6 +379,18 @@ class MeasureActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // Long-press on prompt text copies measurement to clipboard
+        promptText.setOnLongClickListener {
+            val summary = measurementManager.getFormattedSummary()
+            if (summary.isNotEmpty()) {
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Measurement", summary))
+                haptic.lightImpact()
+                Toast.makeText(this, "Copied: $summary", Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -437,50 +408,42 @@ class MeasureActivity : AppCompatActivity() {
 
     private fun addPoint() {
         val hitResult = lastHitResult
-        
-        Log.d(TAG, "addPoint called, hitResult = ${hitResult != null}")
-        
+
         if (hitResult != null) {
-            // Get the smart hit to determine if we're snapping
             val smartHit = measurementManager.getCurrentSmartHit()
-            
-            Log.d(TAG, "SmartHit type: ${smartHit::class.simpleName}")
-            
+
             when (smartHit) {
                 is SmartHit.SnappedVertex -> {
-                    // Reuse existing anchor
                     measurementManager.addPoint(smartHit.anchor, isExistingAnchor = true)
-                    haptic.mediumImpact() // Medium tap for point placement
+                    haptic.mediumImpact()
                     Toast.makeText(this, "Snapped to vertex", Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, "Point added - snapped to vertex")
                 }
                 is SmartHit.SnappedEdge -> {
-                    // Create new anchor at projected edge position
-                    val edgePose = smartHit.getPose()!!
                     val anchor = hitResult.createAnchor()
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
-                    haptic.mediumImpact() // Medium tap for point placement
+                    haptic.mediumImpact()
                     Toast.makeText(this, "Snapped to edge", Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, "Point added - snapped to edge")
                 }
                 is SmartHit.Surface -> {
-                    // Normal surface placement
                     val anchor = hitResult.createAnchor()
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
-                    haptic.mediumImpact() // Medium tap for point placement
+                    haptic.mediumImpact()
                     Toast.makeText(this, "Point added", Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, "Point added - normal surface")
                 }
                 SmartHit.None -> {
-                    haptic.error() // Error pattern for invalid operation
+                    haptic.error()
                     Toast.makeText(this, "No surface detected", Toast.LENGTH_SHORT).show()
-                    Log.w(TAG, "Cannot add point - SmartHit.None")
                     return
                 }
             }
             
             overlayView.postInvalidate()
-            
+
+            // Hide plane renderer after first point for cleaner AR view
+            if (sceneView.planeRenderer.isEnabled) {
+                sceneView.planeRenderer.isVisible = false
+            }
+
             // Show Done, Undo, Clear, and Capture buttons after first point
             if (doneButtonCard.visibility == android.view.View.GONE) {
                 doneButtonCard.visibility = android.view.View.VISIBLE
@@ -489,7 +452,6 @@ class MeasureActivity : AppCompatActivity() {
                 captureButtonCard.visibility = android.view.View.VISIBLE
             }
         } else {
-            Log.w(TAG, "Cannot add point - no hitResult")
             Toast.makeText(this, "No surface detected. Move phone to find a surface.", Toast.LENGTH_SHORT).show()
         }
     }
@@ -534,7 +496,6 @@ class MeasureActivity : AppCompatActivity() {
                 if (rectangle != null) {
                     // Check if all corners are within reasonable view (not too far outside frustum)
                     val cornersInView = isRectangleInView(frame, rectangle)
-                    Log.d(TAG, "Rectangle ${rectangle.sides[0]}m x ${rectangle.sides[1]}m: corners in view = $cornersInView")
                     if (!cornersInView) {
                         continue // Skip rectangles with corners outside view
                     }
@@ -545,16 +506,9 @@ class MeasureActivity : AppCompatActivity() {
                     // Calculate how centered the rectangle is (0-1, higher is better)
                     val centeredness = calculateRectangleCenteredness(frame, rectangle)
                     
-                    // Only consider rectangles that are reasonably centered (user is looking at them)
-                    if (centeredness < 0.5f) {
-                        Log.d(TAG, "  Skipping off-center rectangle: centeredness=$centeredness")
-                        continue
-                    }
-                    
-                    // Score: confidence * size * centeredness^2 (heavily favor centered rectangles)
+                    if (centeredness < 0.5f) continue
+
                     val score = rectangle.confidence * size * centeredness * centeredness
-                    
-                    Log.d(TAG, "  Score: conf=${rectangle.confidence} size=${size}m centered=$centeredness => $score")
                     
                     if (score > bestScore) {
                         bestScore = score
@@ -564,9 +518,6 @@ class MeasureActivity : AppCompatActivity() {
             }
             
             detectedRectangle = bestRectangle
-            if (bestRectangle != null) {
-                Log.d(TAG, "✓ Best rectangle selected: ${bestRectangle.sides[0]}m x ${bestRectangle.sides[1]}m, score=$bestScore")
-            }
             
         } catch (e: Exception) {
             Log.e(TAG, "Rectangle detection error: ${e.message}")
@@ -597,17 +548,10 @@ class MeasureActivity : AppCompatActivity() {
             val clipPos = FloatArray(4)
             android.opengl.Matrix.multiplyMV(clipPos, 0, vpMatrix, 0, worldPos, 0)
             
-            // Skip if behind camera
-            if (clipPos[3] <= 0) {
-                Log.d(TAG, "Corner $i behind camera (w=${clipPos[3]})")
-                continue
-            }
-            
-            // Calculate NDC
+            if (clipPos[3] <= 0) continue
+
             val ndcX = clipPos[0] / clipPos[3]
             val ndcY = clipPos[1] / clipPos[3]
-            
-            Log.d(TAG, "Corner $i NDC: ($ndcX, $ndcY)")
             
             // Allow generous margin (±2.5) to handle rectangles viewed at steep angles
             // This allows rectangles partially outside screen to still be detected
@@ -616,9 +560,7 @@ class MeasureActivity : AppCompatActivity() {
             }
         }
         
-        Log.d(TAG, "isRectangleInView: $cornersInView/4 corners in view (need 2)")
-        
-        // Require at least 2 out of 4 corners to be in view (rectangle visible to user)
+        // Require at least 2 out of 4 corners to be in view
         return cornersInView >= 2
     }
     

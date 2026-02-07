@@ -5,10 +5,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
@@ -17,13 +19,14 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.measureapp.ar.MeasureActivity
 import com.example.measureapp.level.LevelScreen
+import com.example.measureapp.ui.screens.HistoryScreen
 
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
-    
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -47,29 +50,27 @@ fun AppNavigation() {
                         }
                     }
                 )
+                NavigationBarItem(
+                    icon = { Icon(Icons.Default.DateRange, contentDescription = "History") },
+                    label = { Text("History") },
+                    selected = currentRoute == "history",
+                    onClick = {
+                        navController.navigate("history") {
+                            popUpTo("measurement")
+                        }
+                    }
+                )
             }
         }
     ) { paddingValues ->
         NavHost(
-            navController = navController, 
+            navController = navController,
             startDestination = "measurement",
             modifier = Modifier.padding(paddingValues)
         ) {
             composable("measurement") {
-                // Launch Activity automatically
                 val context = LocalContext.current
-                var hasLaunched by remember { mutableStateOf(false) }
-                
-                // Auto-launch MeasureActivity once
-                LaunchedEffect(Unit) {
-                    if (!hasLaunched) {
-                        val intent = Intent(context, MeasureActivity::class.java)
-                        context.startActivity(intent)
-                        hasLaunched = true
-                    }
-                }
-                
-                // Show info screen
+
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -83,22 +84,28 @@ fun AppNavigation() {
                             style = MaterialTheme.typography.headlineMedium
                         )
                         Text(
-                            "Activity-based implementation",
+                            "Measure real-world objects with AR",
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Button(
                             onClick = {
                                 val intent = Intent(context, MeasureActivity::class.java)
                                 context.startActivity(intent)
-                            }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFFFCC00)
+                            )
                         ) {
-                            Text("Open AR Measure")
+                            Text("Start Measuring", color = Color.Black)
                         }
                     }
                 }
             }
             composable("level") {
                 LevelScreen(navController = navController)
+            }
+            composable("history") {
+                HistoryScreen()
             }
         }
     }
