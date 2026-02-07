@@ -1,27 +1,45 @@
 package com.example.measureapp.ar
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.util.Log
+import android.view.PixelCopy
 import android.widget.Button
-import android.widget.TextView
 import android.widget.Toast
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.example.measureapp.R
-import com.google.ar.core.CameraConfig
-import com.google.ar.core.CameraConfigFilter
+import com.example.measureapp.data.local.entities.MeasurementEntity
+import com.example.measureapp.data.models.MeasurementType
+import com.example.measureapp.data.models.UnitType
+import com.example.measureapp.data.repository.MeasurementRepository
+import com.example.measureapp.util.HapticFeedbackHelper
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+import android.content.ClipData
+import android.content.ClipboardManager
 import com.google.ar.core.Config
 import com.google.ar.core.Pose
-import com.google.ar.core.Session
 import io.github.sceneview.ar.ARSceneView
-import io.github.sceneview.ar.node.AnchorNode
-import io.github.sceneview.math.Position
-import java.util.EnumSet
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
+@AndroidEntryPoint
 class MeasureActivity : AppCompatActivity() {
+
+    @Inject lateinit var measurementRepository: MeasurementRepository
 
     private val TAG = "MeasureActivity"
     private val CAMERA_PERMISSION_CODE = 1001
@@ -34,9 +52,13 @@ class MeasureActivity : AppCompatActivity() {
     private lateinit var undoButton: Button
     private lateinit var clearButton: Button
 
+    private lateinit var screenshotButton: Button
     private lateinit var measurementManager: MeasurementManager
     private lateinit var reticle: ReticleNode
+    private lateinit var haptics: HapticFeedbackHelper
     private var lastHitResult: com.google.ar.core.HitResult? = null
+    private var previousReticleState = ReticleNode.State.SEARCHING
+    private var hasFoundSurface = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +78,9 @@ class MeasureActivity : AppCompatActivity() {
         doneButton = findViewById(R.id.done_button)
         undoButton = findViewById(R.id.undo_button)
         clearButton = findViewById(R.id.clear_button)
+        screenshotButton = findViewById(R.id.screenshot_button)
+
+        haptics = HapticFeedbackHelper(this)
 
         measurementManager = MeasurementManager(this, sceneView) { measurementText ->
             runOnUiThread {
@@ -68,7 +93,7 @@ class MeasureActivity : AppCompatActivity() {
         // Connect overlay to manager
         overlayView.measurementManager = measurementManager
         
-        promptText.text = "Move to start"
+        promptText.text = "Point at a surface"
 
         // Check Camera Permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -97,10 +122,8 @@ class MeasureActivity : AppCompatActivity() {
             // Enable Depth API for better edge detection on S25+ ToF sensor
             if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                 config.depthMode = Config.DepthMode.AUTOMATIC
-                Log.d(TAG, "Depth mode enabled: AUTOMATIC")
             } else {
                 config.depthMode = Config.DepthMode.DISABLED
-                Log.d(TAG, "Depth mode not supported, using DISABLED")
             }
         }
         
@@ -115,10 +138,9 @@ class MeasureActivity : AppCompatActivity() {
         // Initialize Professional 3D Reticle AFTER SceneView is configured
         reticle = ReticleNode(sceneView)
         sceneView.addChildNode(reticle)
-        Log.d(TAG, "Professional Reticle initialized and added to scene")
         
         // Initial prompt
-        promptText.text = "Move phone to detect surface"
+        promptText.text = "Point at a surface"
 
         sceneView.onSessionFailed = { exception ->
             Log.e(TAG, "AR Session failed", exception)
@@ -136,63 +158,33 @@ class MeasureActivity : AppCompatActivity() {
                 // Priority: Plane (inside) > DepthPoint (edges!) > Point > Plane (outside)
                 val hits = frame.hitTest(centerX, centerY)
                 
-                // Log what we're seeing for debugging
-                if (hits.isNotEmpty()) {
-                    val types = hits.map { hit ->
-                        when (hit.trackable) {
-                            is com.google.ar.core.Plane -> "Plane"
-                            is com.google.ar.core.DepthPoint -> "DepthPoint"
-                            is com.google.ar.core.Point -> "Point"
-                            else -> "Unknown"
-                        }
-                    }.distinct()
-                    Log.d(TAG, "Hit types available: ${types.joinToString()}")
-                }
-                
-                // PRIORITY 1: DepthPoint (ToF sensor edges) - MOST ACCURATE for edges
-                var hitResult = hits.firstOrNull { hit ->
-                    hit.trackable is com.google.ar.core.DepthPoint
-                }
-                if (hitResult != null) Log.d(TAG, "Using DepthPoint (ToF edge) ✓")
-                
-                // PRIORITY 2: Horizontal planes (laptop screens, tables)
+                // Hit test priority: DepthPoint > Horizontal Plane > Any Plane > Point
+                var hitResult = hits.firstOrNull { it.trackable is com.google.ar.core.DepthPoint }
+
                 if (hitResult == null) {
                     hitResult = hits.firstOrNull { hit ->
                         val trackable = hit.trackable
-                        if (trackable is com.google.ar.core.Plane && 
+                        if (trackable is com.google.ar.core.Plane &&
                             trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) {
-                            // Check if plane is reasonably horizontal (laptop screen, table)
                             val normal = trackable.centerPose.getTransformedAxis(1, 1.0f)
-                            val upDot = normal[1] // Y component - 1.0 = horizontal up, -1.0 = horizontal down
-                            kotlin.math.abs(upDot) > 0.7f // Prefer surfaces within 45° of horizontal
+                            kotlin.math.abs(normal[1]) > 0.7f
                         } else false
                     }
-                    if (hitResult != null) Log.d(TAG, "Using horizontal Plane hit")
                 }
-                
-                // PRIORITY 3: Any tracked plane
+
                 if (hitResult == null) {
                     hitResult = hits.firstOrNull { hit ->
                         val trackable = hit.trackable
-                        trackable is com.google.ar.core.Plane && 
+                        trackable is com.google.ar.core.Plane &&
                         trackable.trackingState == com.google.ar.core.TrackingState.TRACKING
                     }
-                    if (hitResult != null) Log.d(TAG, "Using any Plane hit")
                 }
-                
-                // Oriented surface points
+
                 if (hitResult == null) {
-                    hitResult = hits.firstOrNull { hit ->
-                        hit.trackable is com.google.ar.core.Point
-                    }
-                    if (hitResult != null) Log.d(TAG, "Using Point")
+                    hitResult = hits.firstOrNull { it.trackable is com.google.ar.core.Point }
                 }
                 
-                if (hitResult == null) {
-                    Log.d(TAG, "No valid hit found from ${hits.size} hits")
-                }
-                
-                // Validate distance from camera (max 10m for better range)
+                // Validate distance from camera (10cm to 10m range)
                 val validHitResult = hitResult?.let { hit ->
                     val hitPose = hit.hitPose
                     val cameraPose = camera.pose
@@ -200,23 +192,10 @@ class MeasureActivity : AppCompatActivity() {
                     val dy = hitPose.ty() - cameraPose.ty()
                     val dz = hitPose.tz() - cameraPose.tz()
                     val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                    // Only log distance occasionally to reduce spam
-                    if (frame.timestamp % 30L == 0L) {
-                        Log.d(TAG, "Hit distance: ${distance}m")
-                    }
-                    if (distance <= 10.0f && distance >= 0.1f) hit else null // Allow 10cm to 10m
+                    if (distance in 0.1f..10.0f) hit else null
                 }
-                
+
                 lastHitResult = validHitResult
-                
-                // Monitor tracking quality
-                if (frame.timestamp % 60L == 0L) {
-                    val trackingState = camera.trackingState
-                    val trackingReason = camera.trackingFailureReason
-                    if (trackingState != com.google.ar.core.TrackingState.TRACKING) {
-                        Log.w(TAG, "Tracking quality: $trackingState, reason: $trackingReason")
-                    }
-                }
                 
                 // 2. UPDATE THE MANAGER - This performs smart hit testing and updates rubber band
                 measurementManager.onUpdate(validHitResult)
@@ -232,15 +211,24 @@ class MeasureActivity : AppCompatActivity() {
                     is SmartHit.Surface -> ReticleNode.State.TRACKING
                 }
                 
+                // Haptic feedback on state transitions
+                if (reticleState != previousReticleState) {
+                    when {
+                        reticleState == ReticleNode.State.TRACKING && !hasFoundSurface -> {
+                            haptics.surfaceFound()
+                            hasFoundSurface = true
+                        }
+                        reticleState == ReticleNode.State.SNAPPED -> haptics.snapDetected()
+                    }
+                    previousReticleState = reticleState
+                }
+
                 if (smartPose != null) {
                     reticle.update(smartPose, reticleState)
-                    Log.d(TAG, "Reticle updated with pose at (${smartPose.tx()}, ${smartPose.ty()}, ${smartPose.tz()})")
                 } else {
-                    // No surface detected - show reticle 1m in front of camera
                     val cameraPose = camera.pose
                     val forwardPose = cameraPose.compose(Pose.makeTranslation(0f, 0f, -1.0f))
                     reticle.update(forwardPose, ReticleNode.State.SEARCHING)
-                    Log.d(TAG, "No hit - showing reticle in SEARCHING mode")
                 }
                 reticle.smoothUpdate(0.016f) // ~60 FPS
                 
@@ -284,7 +272,7 @@ class MeasureActivity : AppCompatActivity() {
                         addButton.alpha = 0.5f
                         
                         if (!measurementManager.hasStartedMeasurement) {
-                            promptText.text = "Move phone to detect surface"
+                            promptText.text = "Point at a surface"
                         }
                     }
                 }
@@ -295,7 +283,7 @@ class MeasureActivity : AppCompatActivity() {
                     addButton.alpha = 0.3f
                     
                     if (!measurementManager.hasStartedMeasurement) {
-                        promptText.text = "Move phone slowly to detect surface"
+                        promptText.text = "Move slowly to find surface"
                     }
                 }
             }
@@ -318,12 +306,27 @@ class MeasureActivity : AppCompatActivity() {
         
         doneButton.setOnClickListener {
             if (measurementManager.hasStartedMeasurement) {
+                haptics.measurementComplete()
+
+                // Auto-save measurement to database
+                val summary = measurementManager.getFormattedSummary()
+                val totalDistance = measurementManager.currentLiveDistance
+                if (totalDistance > 0f) {
+                    lifecycleScope.launch {
+                        val entity = MeasurementEntity(
+                            type = MeasurementType.POINT_TO_POINT,
+                            value = totalDistance,
+                            unit = UnitType.METRIC,
+                            label = summary
+                        )
+                        measurementRepository.saveMeasurement(entity, emptyList())
+                    }
+                }
+
                 measurementManager.finishCurrentMeasurement()
-                // Hide Done button, allow starting new measurement
                 doneButton.visibility = android.view.View.GONE
                 doneButton.isEnabled = false
                 doneButton.alpha = 0.5f
-                // Keep add button enabled for next measurement
                 addButton.isEnabled = true
                 addButton.alpha = 1.0f
                 overlayView.postInvalidate()
@@ -332,13 +335,29 @@ class MeasureActivity : AppCompatActivity() {
 
         clearButton.setOnClickListener {
             measurementManager.clear()
-            promptText.text = "Move phone to detect surface"
+            sceneView.planeRenderer.isVisible = true // Re-show planes for new measurement
+            promptText.text = "Point at a surface"
             doneButton.visibility = android.view.View.GONE
             doneButton.isEnabled = false
             doneButton.alpha = 0.5f
             addButton.isEnabled = true
             addButton.alpha = 1.0f
             overlayView.postInvalidate()
+        }
+
+        screenshotButton.setOnClickListener {
+            takeScreenshot()
+        }
+
+        promptText.setOnLongClickListener {
+            val summary = measurementManager.getFormattedSummary()
+            if (summary.isNotEmpty()) {
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Measurement", summary))
+                haptics.pointPlaced()
+                Toast.makeText(this, "Copied: $summary", Toast.LENGTH_SHORT).show()
+            }
+            true
         }
     }
 
@@ -358,54 +377,82 @@ class MeasureActivity : AppCompatActivity() {
     private fun addPoint() {
         val hitResult = lastHitResult
         
-        Log.d(TAG, "addPoint called, hitResult = ${hitResult != null}")
-        
         if (hitResult != null) {
-            // Get the smart hit to determine if we're snapping
             val smartHit = measurementManager.getCurrentSmartHit()
-            
-            Log.d(TAG, "SmartHit type: ${smartHit::class.simpleName}")
             
             when (smartHit) {
                 is SmartHit.SnappedVertex -> {
-                    // Reuse existing anchor
                     measurementManager.addPoint(smartHit.anchor, isExistingAnchor = true)
-                    Toast.makeText(this, "Snapped to vertex", Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, "Point added - snapped to vertex")
+                    haptics.snapDetected()
                 }
                 is SmartHit.SnappedEdge -> {
-                    // Create new anchor at projected edge position
-                    val edgePose = smartHit.getPose()!!
                     val anchor = hitResult.createAnchor()
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
-                    Toast.makeText(this, "Snapped to edge", Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, "Point added - snapped to edge")
+                    haptics.snapDetected()
                 }
                 is SmartHit.Surface -> {
-                    // Normal surface placement
                     val anchor = hitResult.createAnchor()
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
-                    Toast.makeText(this, "Point added", Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, "Point added - normal surface")
+                    haptics.pointPlaced()
                 }
                 SmartHit.None -> {
-                    Toast.makeText(this, "No surface detected", Toast.LENGTH_SHORT).show()
-                    Log.w(TAG, "Cannot add point - SmartHit.None")
                     return
                 }
             }
             
             overlayView.postInvalidate()
-            
+
+            // Hide plane dots once measuring to reduce visual noise
+            sceneView.planeRenderer.isVisible = false
+
             // Show and enable Done button after first point
             if (doneButton.visibility == android.view.View.GONE) {
                 doneButton.visibility = android.view.View.VISIBLE
                 doneButton.isEnabled = true
                 doneButton.alpha = 1.0f
             }
-        } else {
-            Log.w(TAG, "Cannot add point - no hitResult")
-            Toast.makeText(this, "No surface detected. Move phone to find a surface.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun takeScreenshot() {
+        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(sceneView, bitmap, { result ->
+            if (result == PixelCopy.SUCCESS) {
+                // Draw the overlay (measurement labels) on top of the AR capture
+                val canvas = Canvas(bitmap)
+                overlayView.draw(canvas)
+
+                // Save to gallery
+                saveBitmapToGallery(bitmap)
+            } else {
+                runOnUiThread {
+                    Toast.makeText(this, "Screenshot failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }, Handler(Looper.getMainLooper()))
+    }
+
+    private fun saveBitmapToGallery(bitmap: Bitmap) {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val filename = "Measure_$timestamp.jpg"
+
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/MeasureApp")
+        }
+
+        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+        uri?.let {
+            contentResolver.openOutputStream(it)?.use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+            }
+            runOnUiThread {
+                haptics.pointPlaced()
+                Toast.makeText(this, "Saved to gallery", Toast.LENGTH_SHORT).show()
+            }
+        } ?: runOnUiThread {
+            Toast.makeText(this, "Failed to save", Toast.LENGTH_SHORT).show()
         }
     }
 

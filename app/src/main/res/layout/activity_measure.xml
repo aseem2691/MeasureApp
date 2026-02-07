@@ -69,12 +69,12 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:background="@drawable/rounded_background"
-        android:paddingHorizontal="16dp"
+        android:background="@drawable/prompt_background"
+        android:paddingHorizontal="20dp"
         android:paddingVertical="8dp"
-        android:text="Move to start"
+        android:text="Point at a surface"
         android:textColor="@android:color/white"
-        android:textSize="14sp"
+        android:textSize="13sp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/center_reticle" />
@@ -96,7 +96,7 @@
             android:background="@drawable/circle_button"
             android:text="+"
             android:textSize="36sp"
-            android:textColor="@android:color/black"
+            android:textColor="@android:color/white"
             android:contentDescription="@string/add_point_label"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
@@ -110,7 +110,7 @@
             android:layout_height="56dp"
             android:layout_marginEnd="32dp"
             android:background="@drawable/rounded_background"
-            android:backgroundTint="#4CAF50"
+            android:backgroundTint="#FFCC00"
             android:text="✓"
             android:textColor="@android:color/white"
             android:textSize="28sp"
@@ -120,6 +120,21 @@
             android:alpha="0.5"
             app:layout_constraintBottom_toBottomOf="@+id/add_button"
             app:layout_constraintEnd_toStartOf="@+id/add_button"
+            app:layout_constraintTop_toTopOf="@+id/add_button" />
+
+        <!-- Screenshot Button (camera icon) -->
+        <Button
+            android:id="@+id/screenshot_button"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_marginStart="32dp"
+            android:background="@drawable/rounded_background"
+            android:text="📷"
+            android:textSize="24sp"
+            android:textColor="@android:color/white"
+            android:contentDescription="Take screenshot"
+            app:layout_constraintBottom_toBottomOf="@+id/add_button"
+            app:layout_constraintStart_toEndOf="@+id/add_button"
             app:layout_constraintTop_toTopOf="@+id/add_button" />
 
     </androidx.constraintlayout.widget.ConstraintLayout>

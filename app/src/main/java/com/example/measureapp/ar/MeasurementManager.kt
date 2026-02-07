@@ -84,9 +84,9 @@ class MeasurementManager(
     private var isMeasuring = true // Track if we're actively measuring
     var hasStartedMeasurement = false // Track if user has placed at least one point
     
-    // Distance smoothing for consistent measurements
+    // Adaptive distance smoothing for consistent measurements
     private var smoothedDistance: Float = 0f
-    private val distanceSmoothingFactor = 0.3f // Smooth distance changes
+    private var lastDisplayedDistance: Float = 0f
     
     // Snapping thresholds - Reduced for less aggressive auto-snap
     private val VERTEX_SNAP_DISTANCE = 0.05f // 5cm for vertex snapping (less aggressive)
@@ -114,7 +114,6 @@ class MeasurementManager(
                 val distance = length(rawPos - nodePos)
                 
                 if (distance < VERTEX_SNAP_DISTANCE) {
-                    android.util.Log.d("SmartHit", "Snapped to VERTEX at distance $distance")
                     highlightNode(node, true)
                     return SmartHit.SnappedVertex(nodePos, node.anchor!!)
                 }
@@ -127,7 +126,6 @@ class MeasurementManager(
             val distance = length(rawPos - projectedPoint)
             
             if (distance < EDGE_SNAP_DISTANCE) {
-                android.util.Log.d("SmartHit", "Snapped to EDGE at distance $distance")
                 resetHighlights()
                 return SmartHit.SnappedEdge(projectedPoint)
             }
@@ -159,18 +157,29 @@ class MeasurementManager(
             // Calculate distance for UI immediately with smoothing to reduce jitter
             val distance = calculateDistance(startPose, endPose)
             
-            // Smooth the distance to reduce inconsistency and jitter
-            smoothedDistance = if (smoothedDistance == 0f) {
-                distance // Initialize on first measurement
-            } else {
-                smoothedDistance + (distance - smoothedDistance) * distanceSmoothingFactor
+            // Adaptive smoothing: fast response for big moves, stable for small
+            val delta = kotlin.math.abs(distance - smoothedDistance)
+            val factor = when {
+                smoothedDistance == 0f -> 1.0f // Initialize immediately
+                delta > 0.05f -> 0.5f // Fast response for large movements
+                delta < 0.01f -> 0.15f // Stable for small jitter
+                else -> 0.3f
             }
+            smoothedDistance = smoothedDistance + (distance - smoothedDistance) * factor
             currentLiveDistance = smoothedDistance
             
+            // Display snapping: only update text if change > 1mm to prevent jitter
+            val displayDistance = if (kotlin.math.abs(smoothedDistance - lastDisplayedDistance) < 0.001f) {
+                lastDisplayedDistance
+            } else {
+                lastDisplayedDistance = smoothedDistance
+                smoothedDistance
+            }
+
             val statusText = when (currentSmartHit) {
-                is SmartHit.SnappedVertex -> "${formatDistance(smoothedDistance)} [Vertex]"
-                is SmartHit.SnappedEdge -> "${formatDistance(smoothedDistance)} [Edge]"
-                else -> formatDistance(smoothedDistance)
+                is SmartHit.SnappedVertex -> "${formatDistance(displayDistance)} [Vertex]"
+                is SmartHit.SnappedEdge -> "${formatDistance(displayDistance)} [Edge]"
+                else -> formatDistance(displayDistance)
             }
             onMeasurementChanged(statusText)
 
@@ -219,8 +228,8 @@ class MeasurementManager(
             
             SphereNode(
                 engine = sceneView.engine,
-                radius = 0.004f, // 4mm - ultra-tiny crisp dot (iOS style)
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // White like iOS
+                radius = 0.005f, // 5mm dot
+                materialInstance = sceneView.materialLoader.createColorInstance(Color.rgb(255, 204, 0)) // iOS yellow
             ).apply {
                 parent = anchorNode
             }
@@ -238,7 +247,7 @@ class MeasurementManager(
         } else {
             // This is the very first point
             lastAnchor = finalAnchor
-            onMeasurementChanged("Move to end point")
+            onMeasurementChanged("Move to set distance")
         }
         
         // Reset smart hit state after adding point
@@ -255,15 +264,11 @@ class MeasurementManager(
         if (distance < 0.001f) return // Too short to render
 
         if (tempLineNode == null) {
-            // Create bright yellow/gold material for visibility
-            val yellowMaterial = sceneView.materialLoader.createColorInstance(
-                android.graphics.Color.rgb(255, 215, 0) // Bright gold
-            )
             tempLineNode = CylinderNode(
                 engine = sceneView.engine,
-                radius = 0.001f, // 1mm - ultra-thin guide line (iOS style)
+                radius = 0.001f, // 1mm - ultra-thin guide line
                 height = 1.0f,
-                materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.6f) // Semi-transparent white
+                materialInstance = sceneView.materialLoader.createColorInstance(Color.rgb(255, 204, 0), 0.8f) // iOS yellow
             ).apply {
                 isShadowCaster = false
                 isShadowReceiver = false
@@ -290,9 +295,9 @@ class MeasurementManager(
 
         val lineNode = CylinderNode(
             engine = sceneView.engine,
-            radius = 0.0015f, // 1.5mm - laser-thin line (iOS AR Ruler style)
+            radius = 0.0015f, // 1.5mm - thin measurement line
             height = 1.0f,
-            materialInstance = sceneView.materialLoader.createColorInstance(Color.WHITE) // Pure white
+            materialInstance = sceneView.materialLoader.createColorInstance(Color.rgb(255, 204, 0)) // iOS yellow
         ).apply {
             position = point1 + (difference * 0.5f)
             scale = Float3(1.0f, distance, 1.0f)
@@ -328,8 +333,6 @@ class MeasurementManager(
         val snapDistance = 0.15f // Increased to 15cm for easier snapping
         val hitPos = Position(hitPose.tx(), hitPose.ty(), hitPose.tz())
         
-        android.util.Log.d("MeasurementManager", "Checking ${cornerNodes.size} vertices for snapping to $hitPos")
-        
         val nearest = cornerNodes
             .filter { it.anchor != null }
             .minByOrNull { node ->
@@ -339,7 +342,6 @@ class MeasurementManager(
         
         if (nearest != null) {
             val dist = length(nearest.worldPosition - hitPos)
-            android.util.Log.d("MeasurementManager", "Nearest vertex at distance $dist")
             if (dist <= snapDistance) {
                 return nearest
             }
@@ -351,18 +353,18 @@ class MeasurementManager(
     private fun highlightNode(node: AnchorNode, active: Boolean) {
         val sphere = node.childNodes.firstOrNull() as? SphereNode
         if (active) {
-            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.GREEN)
+            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.rgb(255, 255, 100)) // Bright yellow highlight
             sphere?.scale = Float3(1.5f, 1.5f, 1.5f)
         } else {
-            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
+            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.rgb(255, 204, 0)) // iOS yellow
             sphere?.scale = Float3(1.0f, 1.0f, 1.0f)
         }
     }
-    
+
     private fun resetHighlights() {
         cornerNodes.forEach { node ->
             val sphere = node.childNodes.firstOrNull() as? SphereNode
-            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.RED)
+            sphere?.materialInstance = sceneView.materialLoader.createColorInstance(Color.rgb(255, 204, 0)) // iOS yellow
             sphere?.scale = Float3(1.0f, 1.0f, 1.0f)
         }
     }
@@ -451,7 +453,7 @@ class MeasurementManager(
         
         if (anchors.isEmpty()) {
             hasStartedMeasurement = false
-            onMeasurementChanged("Move to start")
+            onMeasurementChanged("Point at a surface")
         } else {
             onMeasurementChanged("Tap + to continue")
         }
@@ -542,7 +544,19 @@ class MeasurementManager(
         hasStartedMeasurement = false
         currentSmartHit = SmartHit.None
         
-        onMeasurementChanged("Point at surface and tap + to start")
+        onMeasurementChanged("Tap + to begin")
+    }
+
+    fun getFormattedSummary(): String {
+        if (currentChain.segments.isEmpty() && measurementChains.isEmpty()) return ""
+        val parts = mutableListOf<String>()
+        measurementChains.forEachIndexed { i, chain ->
+            parts.add(formatDistance(chain.segments.sum()))
+        }
+        if (currentChain.segments.isNotEmpty()) {
+            parts.add(formatDistance(currentChain.segments.sum()))
+        }
+        return if (parts.size == 1) parts[0] else parts.joinToString(" | ")
     }
 
     // --- Math Helpers ---
@@ -611,12 +625,9 @@ class MeasurementManager(
         val hitPose = hitResult.hitPose
         val hitPos = Position(hitPose.tx(), hitPose.ty(), hitPose.tz())
         
-        android.util.Log.d("MeasurementManager", "Computing cursor state - trackable: ${hitResult.trackable::class.simpleName}")
-        
         // Priority 1: Snap to existing vertices (measurement points)
         val nearbyVertex = findNearestCorner(hitPose)
         if (nearbyVertex != null) {
-            android.util.Log.d("MeasurementManager", "SNAPPED TO VERTEX at ${nearbyVertex.worldPosition}")
             return CursorState(
                 position = nearbyVertex.worldPosition,
                 rotation = Quaternion(hitPose.qx(), hitPose.qy(), hitPose.qz(), hitPose.qw()),
@@ -647,21 +658,15 @@ class MeasurementManager(
         }
         
         if (closestPlane != null) {
-            android.util.Log.d("MeasurementManager", "Found nearby plane, checking edges...")
             val edgeSnap = findNearestEdge(closestPlane, hitPos)
             if (edgeSnap != null) {
-                android.util.Log.d("MeasurementManager", "SNAPPED TO EDGE at $edgeSnap")
                 return CursorState(
                     position = edgeSnap,
                     rotation = Quaternion(hitPose.qx(), hitPose.qy(), hitPose.qz(), hitPose.qw()),
                     isSnapped = true,
                     snapType = SnapType.EDGE
                 )
-            } else {
-                android.util.Log.d("MeasurementManager", "No edge within snap threshold")
             }
-        } else {
-            android.util.Log.d("MeasurementManager", "No nearby planes found (have ${allPlanes.size} total planes)")
         }
         
         // No snapping - just return normal tracking
@@ -685,8 +690,6 @@ class MeasurementManager(
         
         // Iterate through polygon edges (FloatBuffer with x,z pairs)
         val polySize = polygon.remaining() / 2 // Number of vertices
-        android.util.Log.d("MeasurementManager", "Checking plane with $polySize vertices, point at ${point.x}, ${point.y}, ${point.z}")
-        
         for (i in 0 until polySize) {
             val x1 = polygon.get(i * 2)
             val z1 = polygon.get(i * 2 + 1)

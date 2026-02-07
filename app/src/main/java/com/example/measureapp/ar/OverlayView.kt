@@ -30,18 +30,18 @@ class OverlayView @JvmOverloads constructor(
     
     // Paint objects (reused for performance)
     private val labelBackgroundPaint = Paint().apply {
-        color = Color.WHITE
-        alpha = (0.9f * 255).toInt()
+        color = Color.rgb(255, 204, 0) // iOS yellow
+        alpha = (0.95f * 255).toInt()
         style = Paint.Style.FILL
         isAntiAlias = true
-        setShadowLayer(4f, 0f, 2f, Color.LTGRAY) // Clean drop shadow
+        setShadowLayer(4f, 0f, 2f, Color.argb(60, 0, 0, 0))
     }
-    
+
     private val labelTextPaint = Paint().apply {
-        color = Color.BLACK
-        textSize = dpToPx(14f)
+        color = Color.WHITE
+        textSize = dpToPx(15f)
         textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         isAntiAlias = true
     }
     
