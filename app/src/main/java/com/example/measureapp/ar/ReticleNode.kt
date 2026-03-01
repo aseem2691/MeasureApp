@@ -33,7 +33,8 @@ class ReticleNode(
     enum class State {
         SEARCHING,
         TRACKING,
-        SNAPPED
+        SNAPPED,
+        DEPTH_EDGE
     }
 
     private var centerDot: SphereNode? = null
@@ -44,9 +45,11 @@ class ReticleNode(
     private lateinit var dotSearching: MaterialInstance
     private lateinit var dotTracking: MaterialInstance
     private lateinit var dotSnapped: MaterialInstance
+    private lateinit var dotDepthEdge: MaterialInstance
     private lateinit var discSearching: MaterialInstance
     private lateinit var discTracking: MaterialInstance
     private lateinit var discSnapped: MaterialInstance
+    private lateinit var discDepthEdge: MaterialInstance
 
     // Smooth interpolation
     private var targetPosition: Position = Position(0f, 0f, 0f)
@@ -66,12 +69,15 @@ class ReticleNode(
 
     private fun createMaterials() {
         val iosYellow = Color.rgb(255, 204, 0)
+        val depthCyan = Color.rgb(0, 200, 255)
         dotSearching = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.5f)
         dotTracking = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.95f)
         dotSnapped = sceneView.materialLoader.createColorInstance(iosYellow, 1.0f)
+        dotDepthEdge = sceneView.materialLoader.createColorInstance(depthCyan, 1.0f)
         discSearching = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.15f)
         discTracking = sceneView.materialLoader.createColorInstance(Color.WHITE, 0.25f)
         discSnapped = sceneView.materialLoader.createColorInstance(iosYellow, 0.35f)
+        discDepthEdge = sceneView.materialLoader.createColorInstance(depthCyan, 0.4f)
     }
 
     private fun createReticleGeometry() {
@@ -147,6 +153,11 @@ class ReticleNode(
                 scale = Float3(1.2f, 1.2f, 1.2f)
                 surfaceDisc?.isVisible = true
             }
+            State.DEPTH_EDGE -> {
+                animationTime = 0f
+                scale = Float3(1.2f, 1.2f, 1.2f) // Same enlarged scale as SNAPPED
+                surfaceDisc?.isVisible = true
+            }
         }
     }
 
@@ -165,6 +176,11 @@ class ReticleNode(
             State.SNAPPED -> {
                 centerDot?.materialInstance = dotSnapped
                 surfaceDisc?.materialInstance = discSnapped
+                surfaceDisc?.isVisible = true
+            }
+            State.DEPTH_EDGE -> {
+                centerDot?.materialInstance = dotDepthEdge
+                surfaceDisc?.materialInstance = discDepthEdge
                 surfaceDisc?.isVisible = true
             }
         }

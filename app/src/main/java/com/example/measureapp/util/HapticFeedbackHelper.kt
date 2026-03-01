@@ -37,6 +37,25 @@ class HapticFeedbackHelper(context: Context) {
         vibrate(VibrationEffect.EFFECT_TICK)
     }
 
+    /**
+     * Light tick when reticle crosses any edge boundary (enters or exits edge zone)
+     */
+    fun edgeCrossed() {
+        vibrate(VibrationEffect.EFFECT_TICK)
+    }
+
+    /**
+     * Double-tick when snapping to a depth-detected edge
+     */
+    fun depthEdgeSnapped() {
+        if (vibrator.hasVibrator()) {
+            // Double-tick waveform: tick, short pause, tick
+            val timings = longArrayOf(0, 20, 40, 20)
+            val amplitudes = intArrayOf(0, 80, 0, 120)
+            vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+        }
+    }
+
     private fun vibrate(effectId: Int) {
         if (vibrator.hasVibrator()) {
             vibrator.vibrate(VibrationEffect.createPredefined(effectId))

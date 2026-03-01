@@ -57,10 +57,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    // ARCore - using direct implementation
-    implementation(libs.arcore)
-    // SceneView for AR
-    implementation("io.github.sceneview:arsceneview:2.0.3")
+    // SceneView for AR (bundles ARCore 1.48 transitively)
+    implementation("io.github.sceneview:arsceneview:2.3.3")
 
     // Room
     implementation(libs.androidx.room.runtime)

@@ -26,33 +26,33 @@ sealed class SmartHit {
     data class Surface(val hitPose: Pose) : SmartHit()
     data class SnappedVertex(val hitPosition: Position, val anchor: Anchor) : SmartHit()
     data class SnappedEdge(val hitPosition: Position) : SmartHit()
-    
+    data class SnappedDepthEdge(val hitPosition: Position, val edge: DepthEdgeDetector.DetectedEdge) : SmartHit()
+
     fun getPose(): Pose? = when (this) {
         is None -> null
         is Surface -> hitPose
-        is SnappedVertex -> {
-            // Create pose from position with identity rotation
-            Pose(
-                floatArrayOf(hitPosition.x, hitPosition.y, hitPosition.z),
-                floatArrayOf(0f, 0f, 0f, 1f)
-            )
-        }
-        is SnappedEdge -> {
-            // Create pose from position with identity rotation
-            Pose(
-                floatArrayOf(hitPosition.x, hitPosition.y, hitPosition.z),
-                floatArrayOf(0f, 0f, 0f, 1f)
-            )
-        }
+        is SnappedVertex -> Pose(
+            floatArrayOf(hitPosition.x, hitPosition.y, hitPosition.z),
+            floatArrayOf(0f, 0f, 0f, 1f)
+        )
+        is SnappedEdge -> Pose(
+            floatArrayOf(hitPosition.x, hitPosition.y, hitPosition.z),
+            floatArrayOf(0f, 0f, 0f, 1f)
+        )
+        is SnappedDepthEdge -> Pose(
+            floatArrayOf(hitPosition.x, hitPosition.y, hitPosition.z),
+            floatArrayOf(0f, 0f, 0f, 1f)
+        )
     }
-    
+
     fun getPosition(): Position? = when (this) {
         is None -> null
         is Surface -> Position(hitPose.tx(), hitPose.ty(), hitPose.tz())
         is SnappedVertex -> hitPosition
         is SnappedEdge -> hitPosition
+        is SnappedDepthEdge -> hitPosition
     }
-    
+
     fun isSnapped(): Boolean = this is SnappedVertex || this is SnappedEdge
 }
 
@@ -91,6 +91,10 @@ class MeasurementManager(
     // Snapping thresholds - Reduced for less aggressive auto-snap
     private val VERTEX_SNAP_DISTANCE = 0.05f // 5cm for vertex snapping (less aggressive)
     private val EDGE_SNAP_DISTANCE = 0.03f   // 3cm for edge snapping (more precise)
+    private val DEPTH_EDGE_SNAP_DISTANCE = 0.04f // 4cm for depth edge snapping
+
+    // Depth edge detection results
+    private var detectedDepthEdges: List<DepthEdgeDetector.DetectedEdge> = emptyList()
 
     /**
      * Perform intelligent hit testing with vertex and edge snapping
@@ -120,18 +124,29 @@ class MeasurementManager(
             }
         }
         
-        // Priority 2: Edge Snapping (5cm threshold)
+        // Priority 2: Edge Snapping (3cm threshold)
         for (lineSegment in lineSegments) {
             val projectedPoint = projectPointOnSegment(rawPos, lineSegment.start, lineSegment.end)
             val distance = length(rawPos - projectedPoint)
-            
+
             if (distance < EDGE_SNAP_DISTANCE) {
                 resetHighlights()
                 return SmartHit.SnappedEdge(projectedPoint)
             }
         }
-        
-        // Priority 3: Normal surface tracking
+
+        // Priority 3: Depth Edge Snapping (4cm threshold)
+        for (edge in detectedDepthEdges) {
+            val projected = projectPointOnSegment(rawPos, edge.startWorld, edge.endWorld)
+            val distance = length(rawPos - projected)
+
+            if (distance < DEPTH_EDGE_SNAP_DISTANCE && edge.confidence > 0.5f) {
+                resetHighlights()
+                return SmartHit.SnappedDepthEdge(projected, edge)
+            }
+        }
+
+        // Priority 4: Normal surface tracking
         resetHighlights()
         return SmartHit.Surface(rawPose)
     }
@@ -179,6 +194,7 @@ class MeasurementManager(
             val statusText = when (currentSmartHit) {
                 is SmartHit.SnappedVertex -> "${formatDistance(displayDistance)} [Vertex]"
                 is SmartHit.SnappedEdge -> "${formatDistance(displayDistance)} [Edge]"
+                is SmartHit.SnappedDepthEdge -> "${formatDistance(displayDistance)} [Depth Edge]"
                 else -> formatDistance(displayDistance)
             }
             onMeasurementChanged(statusText)
@@ -206,6 +222,18 @@ class MeasurementManager(
      * Get the current smart hit for reticle visualization
      */
     fun getCurrentSmartHit(): SmartHit = currentSmartHit
+
+    /**
+     * Update detected depth edges from DepthEdgeDetector
+     */
+    fun updateDetectedDepthEdges(edges: List<DepthEdgeDetector.DetectedEdge>) {
+        detectedDepthEdges = edges
+    }
+
+    /**
+     * Get detected depth edges for overlay rendering
+     */
+    fun getDetectedDepthEdges(): List<DepthEdgeDetector.DetectedEdge> = detectedDepthEdges
 
     fun addPoint(anchor: Anchor, isExistingAnchor: Boolean = false) {
         // Determine final anchor based on current SmartHit

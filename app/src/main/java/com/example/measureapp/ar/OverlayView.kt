@@ -27,6 +27,7 @@ class OverlayView @JvmOverloads constructor(
     var measurementManager: MeasurementManager? = null
     var arCamera: Camera? = null
     var liveLabelText: String? = null // For rubber-band label
+    var detectedDepthEdges: List<DepthEdgeDetector.DetectedEdge> = emptyList()
     
     // Paint objects (reused for performance)
     private val labelBackgroundPaint = Paint().apply {
@@ -52,7 +53,24 @@ class OverlayView @JvmOverloads constructor(
         pathEffect = DashPathEffect(floatArrayOf(dpToPx(10f), dpToPx(5f)), 0f)
         isAntiAlias = true
     }
+
+    private val depthEdgeLinePaint = Paint().apply {
+        color = Color.argb(120, 0, 200, 255) // Semi-transparent cyan
+        strokeWidth = dpToPx(1.5f)
+        style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(dpToPx(8f), dpToPx(4f)), 0f)
+        isAntiAlias = true
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    private val labelBorderPaint = Paint().apply {
+        color = Color.rgb(255, 204, 0) // iOS yellow border
+        strokeWidth = dpToPx(1f)
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
     
+    private val baseTextSize = dpToPx(15f)
     private val cornerRadius = dpToPx(8f)
     private val paddingHorizontal = dpToPx(12f)
     private val paddingVertical = dpToPx(6f)
@@ -86,6 +104,11 @@ class OverlayView @JvmOverloads constructor(
         if (smartHit is SmartHit.SnappedEdge) {
             drawEdgeGuideLine(canvas, camera, smartHit.hitPosition)
         }
+
+        // Draw depth-detected edge guide lines
+        for (edge in detectedDepthEdges) {
+            drawDepthEdgeLine(canvas, camera, edge)
+        }
     }
     
     /**
@@ -100,11 +123,21 @@ class OverlayView @JvmOverloads constructor(
     ) {
         // Convert 3D world position to 2D screen coordinates
         val screenCoords = worldToScreenPoint(camera, worldPosition) ?: return
-        
+
+        // Distance-scaled text: closer labels appear larger, farther ones smaller
+        val cameraPose = camera.pose
+        val dx = worldPosition.x - cameraPose.tx()
+        val dy = worldPosition.y - cameraPose.ty()
+        val dz = worldPosition.z - cameraPose.tz()
+        val distanceFromCamera = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+        val scaleFactor = (1.5f / distanceFromCamera).coerceIn(0.7f, 1.5f)
+        val scaledTextSize = baseTextSize * scaleFactor
+        labelTextPaint.textSize = scaledTextSize
+
         // Calculate label dimensions
         val textBounds = Rect()
         labelTextPaint.getTextBounds(text, 0, text.length, textBounds)
-        
+
         val labelWidth = textBounds.width() + paddingHorizontal * 2
         val labelHeight = textBounds.height() + paddingVertical * 2
         
@@ -142,7 +175,10 @@ class OverlayView @JvmOverloads constructor(
         }
         
         canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, labelBackgroundPaint)
-        
+
+        // Draw thin border for better visibility against varying backgrounds
+        canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, labelBorderPaint)
+
         // Draw text (centered)
         val textX = screenCoords.x
         val textY = screenCoords.y - textBounds.exactCenterY()
@@ -163,6 +199,23 @@ class OverlayView @JvmOverloads constructor(
         canvas.drawPath(path, dottedLinePaint)
     }
     
+    /**
+     * Draw a faint dashed line along a depth-detected edge
+     */
+    private fun drawDepthEdgeLine(canvas: Canvas, camera: Camera, edge: DepthEdgeDetector.DetectedEdge) {
+        val startScreen = worldToScreenPoint(camera, edge.startWorld) ?: return
+        val endScreen = worldToScreenPoint(camera, edge.endWorld) ?: return
+
+        // Modulate alpha by edge confidence
+        val alpha = (edge.confidence * 120).toInt().coerceIn(40, 120)
+        depthEdgeLinePaint.alpha = alpha
+
+        val path = Path()
+        path.moveTo(startScreen.x, startScreen.y)
+        path.lineTo(endScreen.x, endScreen.y)
+        canvas.drawPath(path, depthEdgeLinePaint)
+    }
+
     /**
      * Check if a label rect overlaps with any previously drawn labels
      */

@@ -58,7 +58,10 @@ class MeasureActivity : AppCompatActivity() {
     private lateinit var haptics: HapticFeedbackHelper
     private var lastHitResult: com.google.ar.core.HitResult? = null
     private var previousReticleState = ReticleNode.State.SEARCHING
+    private var previousSmartHit: SmartHit = SmartHit.None
     private var hasFoundSurface = false
+    private lateinit var depthEdgeDetector: DepthEdgeDetector
+    private var frameCount = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,6 +84,7 @@ class MeasureActivity : AppCompatActivity() {
         screenshotButton = findViewById(R.id.screenshot_button)
 
         haptics = HapticFeedbackHelper(this)
+        depthEdgeDetector = DepthEdgeDetector()
 
         measurementManager = MeasurementManager(this, sceneView) { measurementText ->
             runOnUiThread {
@@ -104,14 +108,14 @@ class MeasureActivity : AppCompatActivity() {
         sceneView.configureSession { session, config ->
             // CRITICAL: Enable both horizontal AND vertical for better detection
             config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-            config.instantPlacementMode = Config.InstantPlacementMode.DISABLED
+            config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
             config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-            
+
             // Better lighting estimation for indoor/outdoor
             config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-            
-            // Enable Cloud Anchors for better persistence and tracking
-            config.cloudAnchorMode = Config.CloudAnchorMode.ENABLED
+
+            // Disable Cloud Anchors - not needed for local measurement, reduces startup latency
+            config.cloudAnchorMode = Config.CloudAnchorMode.DISABLED
             
             // Optimize tracking for measurement accuracy
             // This helps maintain anchor positions when moving camera
@@ -183,8 +187,20 @@ class MeasureActivity : AppCompatActivity() {
                 if (hitResult == null) {
                     hitResult = hits.firstOrNull { it.trackable is com.google.ar.core.Point }
                 }
-                
-                // Validate distance from camera (10cm to 10m range)
+
+                // PRIORITY 4: Instant Placement (approximate, refines over time)
+                if (hitResult == null) {
+                    try {
+                        val instantHits = frame.hitTestInstantPlacement(centerX, centerY, 1.5f)
+                        hitResult = instantHits.firstOrNull { hit ->
+                            hit.trackable is com.google.ar.core.InstantPlacementPoint
+                        }
+                    } catch (_: Exception) { /* Instant placement not available */ }
+                }
+
+                // Validate distance from camera
+                val isInstantPlacement = hitResult?.trackable is com.google.ar.core.InstantPlacementPoint
+                val validRange = if (isInstantPlacement) 0.3f..5.0f else 0.1f..10.0f
                 val validHitResult = hitResult?.let { hit ->
                     val hitPose = hit.hitPose
                     val cameraPose = camera.pose
@@ -192,25 +208,34 @@ class MeasureActivity : AppCompatActivity() {
                     val dy = hitPose.ty() - cameraPose.ty()
                     val dz = hitPose.tz() - cameraPose.tz()
                     val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                    if (distance in 0.1f..10.0f) hit else null
+                    if (distance in validRange) hit else null
                 }
 
                 lastHitResult = validHitResult
-                
+
+                // Run depth edge detection every 10 frames
+                frameCount++
+                if (frameCount % 10 == 0) {
+                    depthEdgeDetector.detectEdges(frame, camera)
+                }
+                // Pass detected depth edges to measurement manager
+                measurementManager.updateDetectedDepthEdges(depthEdgeDetector.getEdges())
+
                 // 2. UPDATE THE MANAGER - This performs smart hit testing and updates rubber band
                 measurementManager.onUpdate(validHitResult)
-                
+
                 // 3. GET SMART HIT RESULT for reticle visualization
                 val smartHit = measurementManager.getCurrentSmartHit()
                 val smartPose = smartHit.getPose()
-                
+
                 // 4. UPDATE PROFESSIONAL RETICLE
                 val reticleState = when (smartHit) {
                     is SmartHit.None -> ReticleNode.State.SEARCHING
                     is SmartHit.SnappedVertex, is SmartHit.SnappedEdge -> ReticleNode.State.SNAPPED
+                    is SmartHit.SnappedDepthEdge -> ReticleNode.State.DEPTH_EDGE
                     is SmartHit.Surface -> ReticleNode.State.TRACKING
                 }
-                
+
                 // Haptic feedback on state transitions
                 if (reticleState != previousReticleState) {
                     when {
@@ -219,9 +244,18 @@ class MeasureActivity : AppCompatActivity() {
                             hasFoundSurface = true
                         }
                         reticleState == ReticleNode.State.SNAPPED -> haptics.snapDetected()
+                        reticleState == ReticleNode.State.DEPTH_EDGE -> haptics.depthEdgeSnapped()
                     }
                     previousReticleState = reticleState
                 }
+
+                // Haptic edge crossing feedback (entering/exiting any edge zone)
+                val wasOnEdge = previousSmartHit.isSnapped() || previousSmartHit is SmartHit.SnappedDepthEdge
+                val nowOnEdge = smartHit.isSnapped() || smartHit is SmartHit.SnappedDepthEdge
+                if (wasOnEdge != nowOnEdge) {
+                    haptics.edgeCrossed()
+                }
+                previousSmartHit = smartHit
 
                 if (smartPose != null) {
                     reticle.update(smartPose, reticleState)
@@ -234,6 +268,7 @@ class MeasureActivity : AppCompatActivity() {
                 
                 // 5. Update overlay for 3D label rendering
                 overlayView.arCamera = camera
+                overlayView.detectedDepthEdges = measurementManager.getDetectedDepthEdges()
                 overlayView.postInvalidate()
                 
                 // 6. Monitor tracking quality and warn user
@@ -260,7 +295,8 @@ class MeasureActivity : AppCompatActivity() {
                             promptText.text = when (smartHit) {
                                 is SmartHit.SnappedVertex -> "Tap + to snap to vertex"
                                 is SmartHit.SnappedEdge -> "Tap + to snap to edge"
-                                else -> "Tap + to start"
+                                is SmartHit.SnappedDepthEdge -> "Tap + to snap to depth edge"
+                                else -> if (isInstantPlacement) "Approximate — keep scanning" else "Tap + to start"
                             }
                         }
                     } else if (trackingQuality == "LIMITED" || trackingQuality == "POOR") {
@@ -389,6 +425,11 @@ class MeasureActivity : AppCompatActivity() {
                     val anchor = hitResult.createAnchor()
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
                     haptics.snapDetected()
+                }
+                is SmartHit.SnappedDepthEdge -> {
+                    val anchor = hitResult.createAnchor()
+                    measurementManager.addPoint(anchor, isExistingAnchor = false)
+                    haptics.depthEdgeSnapped()
                 }
                 is SmartHit.Surface -> {
                     val anchor = hitResult.createAnchor()
