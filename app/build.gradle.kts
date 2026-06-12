@@ -22,7 +22,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -45,6 +46,11 @@ android {
     lint {
         disable += "PermissionLaunchedDuringComposition"
     }
+    kapt {
+        arguments {
+            arg("room.schemaLocation", "$projectDir/schemas")
+        }
+    }
 }
 
 dependencies {
@@ -60,7 +66,7 @@ dependencies {
     // ARCore - using direct implementation
     implementation(libs.arcore)
     // SceneView for AR
-    implementation("io.github.sceneview:arsceneview:2.0.3")
+    implementation("io.github.sceneview:arsceneview:2.3.0")
 
     // Room
     implementation(libs.androidx.room.runtime)
@@ -87,13 +93,9 @@ dependencies {
     implementation(libs.accompanist.systemuicontroller)
 
     // ML Kit for Computer Vision
-    implementation("com.google.mlkit:object-detection:17.0.1")
-    implementation("com.google.mlkit:image-labeling:17.0.1")
-
-    // TensorFlow Lite for on-device ML
-    implementation("org.tensorflow:tensorflow-lite:2.14.0")
-    implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
-    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    implementation(libs.mlkit.objectDetection)
+    implementation(libs.mlkit.image.labeling)
+    implementation(libs.mlkit.pose.detection)
 
     // Material Design
     implementation("com.google.android.material:material:1.12.0")

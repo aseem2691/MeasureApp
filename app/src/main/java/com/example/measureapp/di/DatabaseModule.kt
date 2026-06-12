@@ -53,9 +53,10 @@ object DatabaseModule {
     @Singleton
     fun provideMeasurementRepository(
         measurementDao: MeasurementDao,
-        pointDao: PointDao
+        pointDao: PointDao,
+        database: MeasureDatabase
     ): com.example.measureapp.data.repository.MeasurementRepository {
-        return com.example.measureapp.data.repository.MeasurementRepository(measurementDao, pointDao)
+        return com.example.measureapp.data.repository.MeasurementRepository(measurementDao, pointDao, database)
     }
     
     @Provides

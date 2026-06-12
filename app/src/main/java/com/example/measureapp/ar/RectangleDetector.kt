@@ -31,10 +31,10 @@ class RectangleDetector {
     
     companion object {
         private const val TAG = "RectangleDetector"
-        private const val ANGLE_TOLERANCE = 15f // Degrees tolerance for 90° angles
-        private const val MIN_SIDE_LENGTH = 0.05f // 5cm minimum side
+        private const val ANGLE_TOLERANCE = 12f // Degrees tolerance for 90° angles
+        private const val MIN_SIDE_LENGTH = 0.15f // 15cm minimum side (smaller = mostly false positives)
         private const val MAX_SIDE_LENGTH = 2.0f // 2m maximum side (filters out large plane boundaries)
-        private const val MIN_CONFIDENCE = 0.7f // Minimum confidence to report
+        private const val MIN_CONFIDENCE = 0.8f // Minimum confidence to report
     }
     
     /**

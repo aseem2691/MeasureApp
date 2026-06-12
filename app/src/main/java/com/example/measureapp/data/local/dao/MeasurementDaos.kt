@@ -37,6 +37,9 @@ interface MeasurementDao {
 
     @Query("UPDATE measurements SET isFavorite = :isFavorite WHERE id = :id")
     suspend fun updateFavoriteStatus(id: Long, isFavorite: Boolean)
+
+    @Query("SELECT COUNT(*) FROM measurements")
+    fun getMeasurementCount(): Flow<Int>
 }
 
 /**

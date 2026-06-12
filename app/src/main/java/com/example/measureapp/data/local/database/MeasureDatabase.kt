@@ -19,8 +19,8 @@ import com.example.measureapp.data.local.entities.ProjectEntity
         PointEntity::class,
         ProjectEntity::class
     ],
-    version = 1,
-    exportSchema = false
+    version = 2,
+    exportSchema = true
 )
 @TypeConverters(Converters::class)
 abstract class MeasureDatabase : RoomDatabase() {

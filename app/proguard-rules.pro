@@ -5,17 +5,51 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Preserve line numbers for crash reports
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# --- Hilt / Dagger ---
+-keep class dagger.hilt.** { *; }
+-keep class javax.inject.** { *; }
+-keep class * extends dagger.hilt.android.internal.managers.ViewComponentManager$FragmentContextWrapper { *; }
+-keepclassmembers class * {
+    @dagger.hilt.* *;
+    @javax.inject.* *;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# --- Room ---
+-keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class *
+-keep @androidx.room.Dao class *
+-keepclassmembers class * {
+    @androidx.room.* *;
+}
+
+# --- ARCore ---
+-keep class com.google.ar.** { *; }
+
+# --- SceneView / Filament ---
+-keep class io.github.sceneview.** { *; }
+-keep class com.google.android.filament.** { *; }
+
+# --- ML Kit ---
+-keep class com.google.mlkit.** { *; }
+
+# --- TensorFlow Lite ---
+-keep class org.tensorflow.** { *; }
+
+# --- App enums (used in Room converters) ---
+-keepclassmembers enum com.example.measureapp.** {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
+# --- App data models ---
+-keep class com.example.measureapp.data.models.** { *; }
+-keep class com.example.measureapp.data.local.entities.** { *; }
+
+# --- Suppress warnings for optional dependencies ---
+-dontwarn com.google.mlkit.vision.common.internal.Detector
+-dontwarn org.tensorflow.lite.gpu.GpuDelegateFactory$Options$GpuBackend
+-dontwarn org.tensorflow.lite.gpu.GpuDelegateFactory$Options

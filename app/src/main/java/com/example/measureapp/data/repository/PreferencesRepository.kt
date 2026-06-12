@@ -33,6 +33,8 @@ class PreferencesRepository @Inject constructor(
         private val HAPTIC_FEEDBACK_KEY = booleanPreferencesKey("haptic_feedback")
         private val SOUND_ENABLED_KEY = booleanPreferencesKey("sound_enabled")
         private val AUTO_SAVE_KEY = booleanPreferencesKey("auto_save")
+        private val PERSON_DETECTION_KEY = booleanPreferencesKey("person_detection")
+        private val RECTANGLE_DETECTION_KEY = booleanPreferencesKey("rectangle_detection")
     }
     
     /**
@@ -108,7 +110,7 @@ class PreferencesRepository @Inject constructor(
      * Get auto-save preference
      */
     val autoSaveEnabled: Flow<Boolean> = dataStore.data.map { preferences ->
-        preferences[AUTO_SAVE_KEY] ?: false
+        preferences[AUTO_SAVE_KEY] ?: true
     }
     
     /**
@@ -120,6 +122,39 @@ class PreferencesRepository @Inject constructor(
         }
     }
     
+    /**
+     * Get person height detection preference (ML pose detection in AR view)
+     */
+    val personDetectionEnabled: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[PERSON_DETECTION_KEY] ?: true
+    }
+
+    /**
+     * Set person height detection preference
+     */
+    suspend fun setPersonDetection(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PERSON_DETECTION_KEY] = enabled
+        }
+    }
+
+    /**
+     * Get rectangle auto-detection preference (default OFF — false positives draw
+     * confusing "ghost" outlines; users can opt in)
+     */
+    val rectangleDetectionEnabled: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[RECTANGLE_DETECTION_KEY] ?: false
+    }
+
+    /**
+     * Set rectangle auto-detection preference
+     */
+    suspend fun setRectangleDetection(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[RECTANGLE_DETECTION_KEY] = enabled
+        }
+    }
+
     /**
      * Clear all preferences
      */

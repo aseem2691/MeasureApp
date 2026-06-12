@@ -1,6 +1,7 @@
 package com.example.measureapp.data.local.entities
 
 import androidx.room.Entity
+import androidx.room.ForeignKey
 import androidx.room.PrimaryKey
 import com.example.measureapp.data.models.MeasurementType
 import com.example.measureapp.data.models.UnitType
@@ -33,7 +34,13 @@ data class MeasurementEntity(
  */
 @Entity(
     tableName = "measurement_points",
-    primaryKeys = ["measurementId", "pointIndex"]
+    primaryKeys = ["measurementId", "pointIndex"],
+    foreignKeys = [ForeignKey(
+        entity = MeasurementEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["measurementId"],
+        onDelete = ForeignKey.CASCADE
+    )]
 )
 data class PointEntity(
     val measurementId: Long,

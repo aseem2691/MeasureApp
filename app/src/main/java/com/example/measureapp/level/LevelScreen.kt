@@ -7,8 +7,6 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -64,17 +62,12 @@ fun LevelScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Level") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
-                },
+                title = { Text("Level", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = if (isLevel) 
-                        Color(0xFF4CAF50) 
-                    else 
-                        MaterialTheme.colorScheme.primary
+                    containerColor = if (isLevel)
+                        Color(0xFF34C759)
+                    else
+                        MaterialTheme.colorScheme.surface
                 )
             )
         }
@@ -85,7 +78,7 @@ fun LevelScreen(
                 .padding(paddingValues)
                 .background(
                     if (isLevel) 
-                        Color(0xFF4CAF50).copy(alpha = 0.1f) 
+                        Color(0xFF34C759).copy(alpha = 0.1f) 
                     else 
                         MaterialTheme.colorScheme.surface
                 ),
@@ -100,7 +93,7 @@ fun LevelScreen(
                     text = if (isLevel) "LEVEL" else "NOT LEVEL",
                     style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
-                    color = if (isLevel) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
+                    color = if (isLevel) Color(0xFF34C759) else MaterialTheme.colorScheme.onSurface
                 )
                 
                 // Bubble level
@@ -208,7 +201,7 @@ fun BubbleLevelView(
         // Draw center target circle
         val targetRadius = outerRadius * 0.1f
         drawCircle(
-            color = if (isLevel) Color(0xFF4CAF50) else Color.Gray.copy(alpha = 0.3f),
+            color = if (isLevel) Color(0xFF34C759) else Color.Gray.copy(alpha = 0.3f),
             radius = targetRadius,
             center = Offset(centerX, centerY),
             style = Stroke(width = 3.dp.toPx())
@@ -227,7 +220,7 @@ fun BubbleLevelView(
 
         // Draw bubble
         drawCircle(
-            color = if (isLevel) Color(0xFF4CAF50) else Color(0xFF2196F3),
+            color = if (isLevel) Color(0xFF34C759) else Color(0xFF2196F3),
             radius = bubbleRadius,
             center = Offset(bubbleX, bubbleY)
         )
@@ -254,7 +247,7 @@ fun DegreeCard(
         modifier = Modifier.width(140.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isLevel)
-                Color(0xFF4CAF50).copy(alpha = 0.2f)
+                Color(0xFF34C759).copy(alpha = 0.2f)
             else
                 MaterialTheme.colorScheme.surfaceVariant
         )
@@ -275,7 +268,7 @@ fun DegreeCard(
                 text = "%.1f°".format(degrees),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
-                color = if (isLevel) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
+                color = if (isLevel) Color(0xFF34C759) else MaterialTheme.colorScheme.onSurface
             )
         }
     }

@@ -28,18 +28,25 @@
 
         <meta-data android:name="com.google.ar.core" android:value="required" tools:replace="android:value" />
 
-        <!-- AR Measurement Activity - LAUNCHER (like ARCoreMeasure repo) -->
+        <!-- Compose host with bottom-bar navigation (Measure / Level / History / Settings) -->
         <activity
-            android:name=".ar.MeasureActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:screenOrientation="portrait"
             android:theme="@style/Theme.MeasureApp">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- AR Measurement Activity - launched from the Measure tab -->
+        <activity
+            android:name=".ar.MeasureActivity"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.MeasureApp" />
     </application>
 
 </manifest>

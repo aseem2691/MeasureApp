@@ -16,7 +16,11 @@ class Converters {
 
     @TypeConverter
     fun toMeasurementType(value: String): MeasurementType {
-        return MeasurementType.valueOf(value)
+        return try {
+            MeasurementType.valueOf(value)
+        } catch (e: IllegalArgumentException) {
+            MeasurementType.POINT_TO_POINT
+        }
     }
 
     @TypeConverter
@@ -26,6 +30,10 @@ class Converters {
 
     @TypeConverter
     fun toUnitType(value: String): UnitType {
-        return UnitType.valueOf(value)
+        return try {
+            UnitType.valueOf(value)
+        } catch (e: IllegalArgumentException) {
+            UnitType.METRIC
+        }
     }
 }

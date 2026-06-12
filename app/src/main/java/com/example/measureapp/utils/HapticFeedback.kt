@@ -11,7 +11,10 @@ import android.os.VibratorManager
  * Provides light, medium, and heavy impact feedback for AR interactions
  */
 class HapticFeedback(private val context: Context) {
-    
+
+    /** Mirrors the user's haptic feedback preference; when false all impacts are no-ops */
+    var isEnabled: Boolean = true
+
     private val vibrator: Vibrator by lazy {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
@@ -26,6 +29,7 @@ class HapticFeedback(private val context: Context) {
      * Light impact - Used for: reticle locks to surface, snapping to vertex/edge
      */
     fun lightImpact() {
+        if (!isEnabled) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK))
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -40,6 +44,7 @@ class HapticFeedback(private val context: Context) {
      * Medium impact - Used for: point placement, measurement completion
      */
     fun mediumImpact() {
+        if (!isEnabled) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -54,6 +59,7 @@ class HapticFeedback(private val context: Context) {
      * Heavy impact - Used for: errors, warnings
      */
     fun heavyImpact() {
+        if (!isEnabled) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK))
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -68,6 +74,7 @@ class HapticFeedback(private val context: Context) {
      * Success pattern - Used for: measurement complete, saved
      */
     fun success() {
+        if (!isEnabled) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val timings = longArrayOf(0, 50, 50, 50)
             val amplitudes = intArrayOf(0, 128, 0, 255)
@@ -82,6 +89,7 @@ class HapticFeedback(private val context: Context) {
      * Error pattern - Used for: cannot place point, invalid operation
      */
     fun error() {
+        if (!isEnabled) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val timings = longArrayOf(0, 30, 30, 30, 30, 30)
             val amplitudes = intArrayOf(0, 255, 0, 255, 0, 255)

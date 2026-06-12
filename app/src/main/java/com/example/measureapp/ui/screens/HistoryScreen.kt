@@ -1,6 +1,8 @@
 package com.example.measureapp.ui.screens
 
 import android.text.format.DateUtils
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -17,6 +19,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.measureapp.data.local.entities.MeasurementEntity
 import com.example.measureapp.data.models.MeasurementType
+import com.example.measureapp.data.models.UnitType
 import com.example.measureapp.viewmodel.HistoryViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -25,6 +28,30 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel()
 ) {
     val measurements by viewModel.measurements.collectAsState()
+    val unitType by viewModel.unitType.collectAsState()
+    var showClearDialog by remember { mutableStateOf(false) }
+
+    // Clear All confirmation dialog
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDialog = false },
+            title = { Text("Clear All Measurements?") },
+            text = { Text("This will permanently delete all saved measurements. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteAll()
+                    showClearDialog = false
+                }) {
+                    Text("Delete All", color = Color.Red)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header
@@ -41,7 +68,7 @@ fun HistoryScreen(
                 fontWeight = FontWeight.Bold
             )
             if (measurements.isNotEmpty()) {
-                TextButton(onClick = { viewModel.deleteAll() }) {
+                TextButton(onClick = { showClearDialog = true }) {
                     Text("Clear All", color = Color.Red)
                 }
             }
@@ -77,9 +104,38 @@ fun HistoryScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(measurements, key = { it.id }) { measurement ->
-                    MeasurementCard(
-                        measurement = measurement,
-                        onDelete = { viewModel.deleteMeasurement(measurement.id) }
+                    SwipeToDismissBox(
+                        state = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { dismissValue ->
+                                if (dismissValue == SwipeToDismissBoxValue.EndToStart) {
+                                    viewModel.deleteMeasurement(measurement.id)
+                                    true
+                                } else false
+                            }
+                        ),
+                        backgroundContent = {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Red.copy(alpha = 0.8f))
+                                    .padding(horizontal = 20.dp),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete",
+                                    tint = Color.White
+                                )
+                            }
+                        },
+                        enableDismissFromStartToEnd = false,
+                        content = {
+                            MeasurementCard(
+                                measurement = measurement,
+                                unitType = unitType,
+                                onDelete = { viewModel.deleteMeasurement(measurement.id) }
+                            )
+                        }
                     )
                 }
             }
@@ -90,10 +146,9 @@ fun HistoryScreen(
 @Composable
 private fun MeasurementCard(
     measurement: MeasurementEntity,
+    unitType: UnitType,
     onDelete: () -> Unit
 ) {
-    val iosYellow = Color(0xFFFFCC00)
-
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -123,10 +178,10 @@ private fun MeasurementCard(
             Column(modifier = Modifier.weight(1f)) {
                 // Distance value
                 Text(
-                    text = formatDistance(measurement.value),
+                    text = unitType.formatDistance(measurement.value),
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
-                    color = iosYellow
+                    color = MaterialTheme.colorScheme.primary
                 )
 
                 // Relative time
@@ -162,10 +217,3 @@ private fun MeasurementCard(
     }
 }
 
-private fun formatDistance(meters: Float): String {
-    return if (meters >= 1.0f) {
-        String.format("%.2f m", meters)
-    } else {
-        String.format("%.1f cm", meters * 100)
-    }
-}

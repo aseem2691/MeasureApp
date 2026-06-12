@@ -15,7 +15,20 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.example.measureapp.ar.ml.MeasurementAutoLabeler
+import com.example.measureapp.ar.ml.PersonHeightEstimator
+import com.example.measureapp.ar.ml.computeCameraImageRotation
+import com.example.measureapp.data.local.entities.MeasurementEntity
+import com.example.measureapp.data.models.MeasurementPoint
+import com.example.measureapp.data.models.MeasurementType
+import com.example.measureapp.data.models.Vector3
+import com.example.measureapp.data.repository.MeasurementRepository
+import com.example.measureapp.data.repository.PreferencesRepository
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import javax.inject.Inject
 import com.example.measureapp.R
 import com.google.ar.core.CameraConfig
 import com.google.ar.core.CameraConfigFilter
@@ -27,7 +40,13 @@ import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.math.Position
 import java.util.EnumSet
 
+@AndroidEntryPoint
 class MeasureActivity : AppCompatActivity() {
+
+    @Inject lateinit var preferencesRepository: PreferencesRepository
+    @Inject lateinit var measurementRepository: MeasurementRepository
+
+    private var autoSaveEnabled = true
 
     private val TAG = "MeasureActivity"
     private val CAMERA_PERMISSION_CODE = 1001
@@ -46,16 +65,38 @@ class MeasureActivity : AppCompatActivity() {
     private lateinit var helpHint: TextView
     private lateinit var captureButton: ImageView
     private lateinit var captureButtonCard: androidx.cardview.widget.CardView
+    private lateinit var modeLineCard: androidx.cardview.widget.CardView
+    private lateinit var modeLineText: TextView
+    private lateinit var modeHeightCard: androidx.cardview.widget.CardView
+    private lateinit var modeHeightText: TextView
 
     private lateinit var measurementManager: MeasurementManager
-    private lateinit var reticle: ReticleNode
     private lateinit var rectangleDetector: RectangleDetector
+    private val depthEdgeSnapper = DepthEdgeSnapper()
+    private var cachedDepthEdge: io.github.sceneview.math.Position? = null
+    private var depthHealthNotified = false
     private var lastHitResult: com.google.ar.core.HitResult? = null
+    private var lockedPlane: com.google.ar.core.Plane? = null
     private lateinit var haptic: com.example.measureapp.utils.HapticFeedback
     private lateinit var measurementCapture: MeasurementCapture
     private var lastSmartHitState: SmartHit = SmartHit.None
     private var detectedRectangle: DetectedRectangle? = null
+    private var candidateRectangle: DetectedRectangle? = null
+    private var rectangleStableCount = 0
     private var hasFoundSurface = false
+    private var lastInteractionTime: Long = System.currentTimeMillis()
+    private var isPillDimmed = false
+    private var lastAddPointTime: Long = 0L
+    private var frameCount = 0
+
+    // On-device ML (ML Kit / TensorFlow Lite)
+    private lateinit var personHeightEstimator: PersonHeightEstimator
+    private lateinit var measurementAutoLabeler: MeasurementAutoLabeler
+    private var personDetectionEnabled = true
+    private var rectangleDetectionEnabled = false
+    private var lastStableHeightMeters: Float? = null
+    private var currentFrame: com.google.ar.core.Frame? = null
+    private var cameraImageRotation = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,28 +123,100 @@ class MeasureActivity : AppCompatActivity() {
         helpHint = findViewById(R.id.help_hint)
         captureButton = findViewById(R.id.capture_button)
         captureButtonCard = findViewById(R.id.capture_button_card)
+        modeLineCard = findViewById(R.id.mode_line_card)
+        modeLineText = findViewById(R.id.mode_line_text)
+        modeHeightCard = findViewById(R.id.mode_height_card)
+        modeHeightText = findViewById(R.id.mode_height_text)
+
+        modeLineCard.setOnClickListener { setMeasureMode(MeasurementManager.MeasureMode.LINE) }
+        modeHeightCard.setOnClickListener { setMeasureMode(MeasurementManager.MeasureMode.HEIGHT) }
 
         // Initialize haptic feedback
         haptic = com.example.measureapp.utils.HapticFeedback(this)
-        
+
         // Initialize rectangle detector
         rectangleDetector = RectangleDetector()
+
+        // Initialize on-device ML (pose detection for person height, labeling for history)
+        personHeightEstimator = PersonHeightEstimator(this)
+        measurementAutoLabeler = MeasurementAutoLabeler()
         
         measurementManager = MeasurementManager(this, sceneView) { measurementText ->
             runOnUiThread {
                 promptText.text = measurementText
                 // Update live label in overlay
                 overlayView.liveLabelText = measurementText
+                // Track interaction for auto-dim
+                lastInteractionTime = System.currentTimeMillis()
+                if (isPillDimmed) {
+                    isPillDimmed = false
+                    findViewById<androidx.cardview.widget.CardView>(R.id.measurement_card)?.animate()
+                        ?.alpha(1.0f)?.setDuration(200)?.start()
+                }
             }
         }
         
+        // Set unit preference on manager
+        lifecycleScope.launch {
+            preferencesRepository.unitType.collect { unit ->
+                measurementManager.unitType = unit
+            }
+        }
+
+        lifecycleScope.launch {
+            preferencesRepository.autoSaveEnabled.collect { enabled ->
+                autoSaveEnabled = enabled
+            }
+        }
+
+        lifecycleScope.launch {
+            preferencesRepository.hapticFeedbackEnabled.collect { enabled ->
+                haptic.isEnabled = enabled
+            }
+        }
+
+        lifecycleScope.launch {
+            preferencesRepository.personDetectionEnabled.collect { enabled ->
+                personDetectionEnabled = enabled
+            }
+        }
+
+        lifecycleScope.launch {
+            preferencesRepository.rectangleDetectionEnabled.collect { enabled ->
+                rectangleDetectionEnabled = enabled
+            }
+        }
+
+        // Tapping the height pill saves the detected person height to History
+        measurementSubtitle.setOnClickListener {
+            val height = lastStableHeightMeters ?: return@setOnClickListener
+            lifecycleScope.launch {
+                try {
+                    measurementRepository.saveMeasurement(
+                        MeasurementEntity(
+                            type = MeasurementType.PERSON_HEIGHT,
+                            value = height,
+                            unit = measurementManager.unitType,
+                            label = "Person height"
+                        ),
+                        emptyList()
+                    )
+                    haptic.success()
+                    Toast.makeText(this@MeasureActivity, "Height saved to History", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to save person height", e)
+                }
+            }
+        }
+
         // Connect overlay to manager
         overlayView.measurementManager = measurementManager
         
         // Initialize measurement capture
         measurementCapture = MeasurementCapture(this, sceneView, overlayView)
         
-        promptText.text = "Move to start"
+        promptText.text = "Scanning..."
+        measurementSubtitle.visibility = android.view.View.GONE
 
         // Check Camera Permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -149,12 +262,8 @@ class MeasureActivity : AppCompatActivity() {
             isShadowReceiver = false
         }
         
-        // Initialize Professional 3D Reticle AFTER SceneView is configured
-        reticle = ReticleNode(sceneView)
-        sceneView.addChildNode(reticle)
-        
         // Initial prompt
-        promptText.text = "Move phone to detect surface"
+        promptText.text = "Scanning..."
 
         sceneView.onSessionFailed = { exception ->
             Log.e(TAG, "AR Session failed", exception)
@@ -168,78 +277,86 @@ class MeasureActivity : AppCompatActivity() {
                 val centerX = sceneView.width / 2f
                 val centerY = sceneView.height / 2f
                 
-                // 1. Perform Hit Test with EDGE DETECTION priority
-                // Priority: Plane (inside) > DepthPoint (edges!) > Point > Plane (outside)
-                val hits = frame.hitTest(centerX, centerY)
+                frameCount++
 
-                // PRIORITY 1: Plane hits inside polygon (most stable)
-                var hitResult = hits.firstOrNull { hit ->
-                    val trackable = hit.trackable
-                    trackable is com.google.ar.core.Plane &&
-                    trackable.trackingState == com.google.ar.core.TrackingState.TRACKING &&
-                    trackable.isPoseInPolygon(hit.hitPose)
-                }
+                // 1. Multi-sample, foreground-biased hit test (see performBestHitTest)
+                val validHitResult = performBestHitTest(frame, camera, centerX, centerY)
 
-                // PRIORITY 2: DepthPoint (ToF sensor)
-                if (hitResult == null) {
-                    hitResult = hits.firstOrNull { hit ->
-                        hit.trackable is com.google.ar.core.DepthPoint
-                    }
-                }
-
-                // PRIORITY 3: Feature points (fallback)
-                if (hitResult == null) {
-                    hitResult = hits.firstOrNull { hit ->
-                        hit.trackable is com.google.ar.core.Point &&
-                        hit.trackable.trackingState == com.google.ar.core.TrackingState.TRACKING
-                    }
-                }
-                
-                // Validate distance from camera (max 10m for better range)
-                val validHitResult = hitResult?.let { hit ->
-                    val hitPose = hit.hitPose
-                    val cameraPose = camera.pose
-                    val dx = hitPose.tx() - cameraPose.tx()
-                    val dy = hitPose.ty() - cameraPose.ty()
-                    val dz = hitPose.tz() - cameraPose.tz()
-                    val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                    if (distance <= 10.0f && distance >= 0.1f) hit else null // Allow 10cm to 10m
-                }
-                
                 lastHitResult = validHitResult
+
+                // 1b. Physical edge detection from the depth image (throttled)
+                if (frameCount % 3 == 0) {
+                    cachedDepthEdge = depthEdgeSnapper.findEdgeNearPoint(frame, centerX, centerY)
+                }
+                measurementManager.depthEdgeSnapPosition = cachedDepthEdge
+
+                // Depth health check: after ~20s of session, warn once if the device
+                // never produced a depth image (ARCore depth pipeline failure)
+                if (!depthHealthNotified && frameCount == 600 && !depthEdgeSnapper.isDepthWorking) {
+                    depthHealthNotified = true
+                    Log.w(TAG, "Depth API produced no depth images this session — " +
+                        "edge snapping and depth-assisted placement are unavailable")
+                    runOnUiThread {
+                        Toast.makeText(
+                            this,
+                            "Depth sensing unavailable on this device — try updating " +
+                                "'Google Play Services for AR' in the Play Store",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
                 
-                // 2. UPDATE THE MANAGER - This performs smart hit testing and updates rubber band
-                measurementManager.onUpdate(validHitResult)
+                // 2. UPDATE THE MANAGER - This performs smart hit testing and updates rubber band.
+                // The screen-center camera ray drives HEIGHT-mode vertical tracking.
+                val displayPose = camera.displayOrientedPose
+                val rayDir = displayPose.rotateVector(floatArrayOf(0f, 0f, -1f))
+                measurementManager.onUpdate(
+                    validHitResult,
+                    rayOrigin = Position(displayPose.tx(), displayPose.ty(), displayPose.tz()),
+                    rayDirection = Position(rayDir[0], rayDir[1], rayDir[2])
+                )
                 
                 // 3. GET SMART HIT RESULT for reticle visualization
                 val smartHit = measurementManager.getCurrentSmartHit()
-                val smartPose = smartHit.getPose()
-                
-                // 4. UPDATE PROFESSIONAL RETICLE
-                val reticleState = when (smartHit) {
-                    is SmartHit.None -> ReticleNode.State.SEARCHING
-                    is SmartHit.SnappedVertex, is SmartHit.SnappedEdge -> ReticleNode.State.SNAPPED
-                    is SmartHit.Surface -> ReticleNode.State.TRACKING
+
+                // 4. UPDATE RETICLE (2D overlay — thin ring, never blocks the view)
+                overlayView.reticleState = when (smartHit) {
+                    is SmartHit.None -> OverlayView.ReticleState.SEARCHING
+                    is SmartHit.SnappedVertex, is SmartHit.SnappedEdge -> OverlayView.ReticleState.SNAPPED
+                    is SmartHit.Surface -> OverlayView.ReticleState.TRACKING
                 }
-                
-                if (smartPose != null) {
-                    reticle.update(smartPose, reticleState)
-                } else {
-                    val cameraPose = camera.pose
-                    val forwardPose = cameraPose.compose(Pose.makeTranslation(0f, 0f, -1.0f))
-                    reticle.update(forwardPose, ReticleNode.State.SEARCHING)
-                }
-                reticle.smoothUpdate(0.016f) // ~60 FPS
-                
-                // 5. RECTANGLE AUTO-DETECTION (scan periodically)
-                if (frame.timestamp % 15L == 0L) {
-                    detectRectanglesInView(frame)
+                overlayView.reticleWorld = smartHit.getPosition()
+
+                // 5. RECTANGLE AUTO-DETECTION (opt-in via Settings; scan periodically)
+                if (rectangleDetectionEnabled) {
+                    if (frameCount % 15 == 0) {
+                        detectRectanglesInView(frame)
+                        // Detected rectangle corners/edges become snap targets
+                        measurementManager.rectangleSnapTargets = detectedRectangle
+                    }
+                } else if (detectedRectangle != null) {
+                    detectedRectangle = null
+                    candidateRectangle = null
+                    rectangleStableCount = 0
+                    measurementManager.rectangleSnapTargets = null
                 }
 
                 // 6. Update overlay for 3D label rendering (includes rectangle overlay)
                 overlayView.arCamera = camera
                 overlayView.detectedRectangle = detectedRectangle
                 overlayView.postInvalidate()
+
+                // 6b. ML person height detection (pose model + depth hit tests)
+                currentFrame = frame
+                if (cameraImageRotation < 0) {
+                    cameraImageRotation = computeCameraImageRotation(this, session)
+                }
+                if (personDetectionEnabled) {
+                    val heightResult = personHeightEstimator.onFrame(session, frame)
+                    runOnUiThread { updatePersonHeightUi(heightResult) }
+                } else if (overlayView.personHeightIndicator != null) {
+                    runOnUiThread { updatePersonHeightUi(null) }
+                }
                 
                 // 7. Monitor tracking quality and warn user
                 val trackingQuality = when (camera.trackingState) {
@@ -267,7 +384,7 @@ class MeasureActivity : AppCompatActivity() {
                         lastSmartHitState = smartHit
                     }
                     
-                    if (validHitResult != null && trackingQuality == "GOOD") {
+                    if ((validHitResult != null || measurementManager.isHeightMeasureActive()) && trackingQuality == "GOOD") {
                         addButton.isEnabled = true
                         addButton.alpha = 1.0f
                         
@@ -277,35 +394,42 @@ class MeasureActivity : AppCompatActivity() {
                         // Update prompt only if not currently measuring
                         if (!measurementManager.hasStartedMeasurement) {
                             promptText.text = when (smartHit) {
-                                is SmartHit.SnappedVertex -> "Tap + to snap to vertex"
-                                is SmartHit.SnappedEdge -> "Tap + to snap to edge"
+                                is SmartHit.SnappedVertex -> "Snap to vertex"
+                                is SmartHit.SnappedEdge -> "Snap to edge"
                                 else -> "Tap + to start"
                             }
-                            measurementSubtitle.text = "Point at surface and tap +"
+                        }
+
+                        // Auto-dim pill after 3 seconds of inactivity
+                        val timeSinceInteraction = System.currentTimeMillis() - lastInteractionTime
+                        if (timeSinceInteraction > 3000 && !isPillDimmed && measurementManager.hasStartedMeasurement) {
+                            isPillDimmed = true
+                            findViewById<androidx.cardview.widget.CardView>(R.id.measurement_card)?.animate()
+                                ?.alpha(0.4f)?.setDuration(500)?.start()
                         }
                     } else if (trackingQuality == "LIMITED" || trackingQuality == "POOR") {
                         addButton.isEnabled = false
                         addButton.alpha = 0.3f
                         promptText.text = "Move slowly"
-                        measurementSubtitle.text = "Tracking quality low"
                     } else {
-                        addButton.isEnabled = true 
+                        addButton.isEnabled = true
                         addButton.alpha = 0.5f
-                        
+
                         if (!measurementManager.hasStartedMeasurement) {
-                            promptText.text = "Move device"
-                            measurementSubtitle.text = "To detect surfaces"
+                            promptText.text = "Scanning..."
                         }
                     }
                 }
             } else {
-                reticle.update(null, ReticleNode.State.SEARCHING)
+                overlayView.reticleState = OverlayView.ReticleState.SEARCHING
+                overlayView.reticleWorld = null
+                overlayView.postInvalidate()
                 runOnUiThread {
                     addButton.isEnabled = false
                     addButton.alpha = 0.3f
-                    
+
                     if (!measurementManager.hasStartedMeasurement) {
-                        promptText.text = "Move phone slowly to detect surface"
+                        promptText.text = "Scanning..."
                     }
                 }
             }
@@ -313,6 +437,9 @@ class MeasureActivity : AppCompatActivity() {
 
         // Setup buttons
         addButton.setOnClickListener {
+            val now = System.currentTimeMillis()
+            if (now - lastAddPointTime < 200L) return@setOnClickListener // Prevent double-tap
+            lastAddPointTime = now
             addPoint()
         }
         
@@ -320,6 +447,7 @@ class MeasureActivity : AppCompatActivity() {
             measurementManager.undo()
             overlayView.postInvalidate()
             if (!measurementManager.hasStartedMeasurement) {
+                lockedPlane = null
                 doneButtonCard.visibility = android.view.View.GONE
                 undoCard.visibility = android.view.View.GONE
                 clearCard.visibility = android.view.View.GONE
@@ -328,19 +456,14 @@ class MeasureActivity : AppCompatActivity() {
         
         doneButton.setOnClickListener {
             if (measurementManager.hasStartedMeasurement) {
-                measurementManager.finishCurrentMeasurement()
-                haptic.success() // Success pattern for completion
-                // Hide Done button, allow starting new measurement
-                doneButtonCard.visibility = android.view.View.GONE
-                // Keep undo/clear visible for completed measurements
-                overlayView.postInvalidate()
+                completeMeasurement()
             }
         }
 
         clearButton.setOnClickListener {
             measurementManager.clear()
-            promptText.text = "Point at a surface to start"
-            measurementSubtitle.text = "Tap + to add point"
+            lockedPlane = null
+            promptText.text = "Tap + to start"
             doneButtonCard.visibility = android.view.View.GONE
             undoCard.visibility = android.view.View.GONE
             clearCard.visibility = android.view.View.GONE
@@ -406,37 +529,260 @@ class MeasureActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Multi-sample, foreground-biased hit testing.
+     *
+     * The depth map bleeds into the background at object boundaries, so a single
+     * center ray aimed at an edge (e.g. the top of a laptop screen) can land meters
+     * behind the target. We sample a small cross pattern and keep the hit closest to
+     * the camera; offset samples must beat the current best by a clear margin so the
+     * center sample wins unless depth genuinely slipped to the background.
+     *
+     * While a measurement is in progress, hits on the plane it started on win outright
+     * so planar measurements stay planar (iOS behavior).
+     */
+    private fun performBestHitTest(
+        frame: com.google.ar.core.Frame,
+        camera: com.google.ar.core.Camera,
+        centerX: Float,
+        centerY: Float
+    ): com.google.ar.core.HitResult? {
+        val sampleRadius = 12f * resources.displayMetrics.density
+        val offsets = arrayOf(
+            0f to 0f,
+            -sampleRadius to 0f, sampleRadius to 0f,
+            0f to -sampleRadius, 0f to sampleRadius
+        )
+        val cameraPose = camera.pose
+
+        var best: com.google.ar.core.HitResult? = null
+        var bestDistance = Float.MAX_VALUE
+
+        for ((index, offset) in offsets.withIndex()) {
+            val hits = try {
+                frame.hitTest(centerX + offset.first, centerY + offset.second)
+            } catch (e: Exception) {
+                continue
+            }
+
+            // Plane lock: prefer the surface the current measurement started on, but
+            // it no longer wins outright — see the distance rule below. (An outright
+            // win projected aims THROUGH raised objects onto the table behind them.)
+            val lockedHit = lockedPlane
+                ?.takeIf { it.trackingState == com.google.ar.core.TrackingState.TRACKING }
+                ?.let { plane -> hits.firstOrNull { it.trackable == plane } }
+
+            val planeHit = lockedHit ?: hits.firstOrNull { hit ->
+                val t = hit.trackable
+                t is com.google.ar.core.Plane &&
+                    t.trackingState == com.google.ar.core.TrackingState.TRACKING &&
+                    t.isPoseInPolygon(hit.hitPose)
+            }
+            val depthHit = hits.firstOrNull { it.trackable is com.google.ar.core.DepthPoint }
+                ?: hits.firstOrNull { hit ->
+                    hit.trackable is com.google.ar.core.Point &&
+                        hit.trackable.trackingState == com.google.ar.core.TrackingState.TRACKING
+                }
+
+            // Choose by DISTANCE, not fixed type priority. A plane behind a foreground
+            // object is "inside polygon" yet wrong — a trackpad 2cm above the table is
+            // 5-6cm closer ALONG THE RAY at shallow angles, exactly when the plane
+            // projection error is biggest. So a depth/feature hit clearly in front
+            // (>5cm) wins; the plane wins ties for stability (its error is small at
+            // steep angles anyway).
+            val candidate = when {
+                planeHit == null -> depthHit
+                depthHit == null -> planeHit
+                else -> {
+                    val planeDistance = hitDistance(planeHit, cameraPose)
+                    val depthDistance = hitDistance(depthHit, cameraPose)
+                    if (depthDistance < planeDistance - 0.05f) depthHit else planeHit
+                }
+            }
+
+            if (candidate != null) {
+                val distance = hitDistance(candidate, cameraPose)
+                val margin = if (index == 0) 0f else 0.05f
+                if (distance in 0.1f..10.0f && distance < bestDistance - margin) {
+                    bestDistance = distance
+                    best = candidate
+                }
+            }
+        }
+        return best
+    }
+
+    private fun hitDistance(hit: com.google.ar.core.HitResult, cameraPose: Pose): Float {
+        val dx = hit.hitPose.tx() - cameraPose.tx()
+        val dy = hit.hitPose.ty() - cameraPose.ty()
+        val dz = hit.hitPose.tz() - cameraPose.tz()
+        return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
+    private fun saveMeasurementToHistory(completed: MeasurementManager.CompletedMeasurement) {
+        // Classify the scene first so the history entry gets a meaningful name
+        val frame = currentFrame
+        if (frame != null && cameraImageRotation >= 0) {
+            measurementAutoLabeler.labelFrame(frame, cameraImageRotation) { label ->
+                persistMeasurement(completed, label)
+            }
+        } else {
+            persistMeasurement(completed, null)
+        }
+    }
+
+    private fun persistMeasurement(completed: MeasurementManager.CompletedMeasurement, label: String?) {
+        lifecycleScope.launch {
+            try {
+                val type = if (completed.points.size > 2) MeasurementType.PATH else MeasurementType.POINT_TO_POINT
+                measurementRepository.saveMeasurement(
+                    MeasurementEntity(
+                        type = type,
+                        value = completed.totalMeters,
+                        unit = measurementManager.unitType,
+                        label = label ?: ""
+                    ),
+                    completed.points.map { MeasurementPoint(Vector3(it.x, it.y, it.z)) }
+                )
+                val message = if (label != null) "Saved to History · $label" else "Saved to History"
+                Toast.makeText(this@MeasureActivity, message, Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save measurement to history", e)
+            }
+        }
+    }
+
+    private fun updatePersonHeightUi(result: PersonHeightEstimator.Result?) {
+        if (result == null) {
+            if (overlayView.personHeightIndicator != null) {
+                overlayView.personHeightIndicator = null
+                measurementSubtitle.visibility = android.view.View.GONE
+                lastStableHeightMeters = null
+            }
+            return
+        }
+        val formatted = measurementManager.unitType.formatDistance(result.heightMeters)
+        overlayView.personHeightIndicator = OverlayView.PersonHeightIndicator(
+            head = result.headScreen,
+            feet = result.feetScreen,
+            text = formatted,
+            isStable = result.isStable
+        )
+        lastStableHeightMeters = if (result.isStable) result.heightMeters else null
+        measurementSubtitle.visibility = android.view.View.VISIBLE
+        measurementSubtitle.text = if (result.isStable) "🧍 $formatted · tap to save" else "🧍 $formatted"
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        personHeightEstimator.close()
+        measurementAutoLabeler.close()
+    }
+
+    /** Finish the in-progress measurement, persist it, reset for the next one */
+    private fun completeMeasurement() {
+        val completed = measurementManager.finishCurrentMeasurement()
+        lockedPlane = null
+        haptic.success()
+        doneButtonCard.visibility = android.view.View.GONE
+        // Keep undo/clear visible for completed measurements
+        overlayView.postInvalidate()
+
+        if (completed != null && autoSaveEnabled) {
+            saveMeasurementToHistory(completed)
+        }
+    }
+
+    private fun setMeasureMode(mode: MeasurementManager.MeasureMode) {
+        if (measurementManager.measureMode == mode) return
+        if (measurementManager.hasStartedMeasurement) {
+            completeMeasurement()
+        }
+        measurementManager.measureMode = mode
+
+        val selectedBg = android.graphics.Color.parseColor("#FFCC00")
+        val unselectedBg = android.graphics.Color.parseColor("#CC1C1C1E")
+        val isLine = mode == MeasurementManager.MeasureMode.LINE
+        modeLineCard.setCardBackgroundColor(if (isLine) selectedBg else unselectedBg)
+        modeLineText.setTextColor(if (isLine) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+        modeHeightCard.setCardBackgroundColor(if (isLine) unselectedBg else selectedBg)
+        modeHeightText.setTextColor(if (isLine) android.graphics.Color.WHITE else android.graphics.Color.BLACK)
+
+        promptText.text = if (isLine) "Tap + to start" else "Tap + on the base of the object"
+        haptic.lightImpact()
+    }
+
     private fun addPoint() {
+        // HEIGHT mode with a base placed: the point is on the vertical axis (no surface needed)
+        if (measurementManager.isHeightMeasureActive()) {
+            val heightPose = measurementManager.getCurrentSmartHit().getPose()
+            val anchor = try {
+                heightPose?.let { sceneView.session?.createAnchor(it) }
+            } catch (e: Exception) {
+                null
+            }
+            if (anchor == null) {
+                haptic.error()
+                return
+            }
+            measurementManager.addPoint(anchor)
+            haptic.mediumImpact()
+            overlayView.postInvalidate()
+            // Heights are two-point measurements — complete and save immediately
+            completeMeasurement()
+            return
+        }
+
         val hitResult = lastHitResult
 
         if (hitResult != null) {
+            val isFirstPoint = !measurementManager.hasStartedMeasurement
             val smartHit = measurementManager.getCurrentSmartHit()
 
             when (smartHit) {
                 is SmartHit.SnappedVertex -> {
                     measurementManager.addPoint(smartHit.anchor, isExistingAnchor = true)
                     haptic.mediumImpact()
-                    Toast.makeText(this, "Snapped to vertex", Toast.LENGTH_SHORT).show()
                 }
                 is SmartHit.SnappedEdge -> {
-                    val anchor = hitResult.createAnchor()
+                    // Anchor at the SNAPPED position, not the raw hit — otherwise
+                    // the magnet effect is visual-only and the point lands off-edge
+                    val snappedPose = smartHit.getPose()
+                    val anchor = if (snappedPose == null) {
+                        hitResult.createAnchor()
+                    } else {
+                        try {
+                            hitResult.trackable.createAnchor(snappedPose)
+                        } catch (e: Exception) {
+                            try {
+                                sceneView.session?.createAnchor(snappedPose)
+                            } catch (e2: Exception) {
+                                null
+                            } ?: hitResult.createAnchor()
+                        }
+                    }
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
                     haptic.mediumImpact()
-                    Toast.makeText(this, "Snapped to edge", Toast.LENGTH_SHORT).show()
                 }
                 is SmartHit.Surface -> {
                     val anchor = hitResult.createAnchor()
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
                     haptic.mediumImpact()
-                    Toast.makeText(this, "Point added", Toast.LENGTH_SHORT).show()
                 }
                 SmartHit.None -> {
                     haptic.error()
-                    Toast.makeText(this, "No surface detected", Toast.LENGTH_SHORT).show()
                     return
                 }
             }
-            
+
+            // Lock subsequent hit tests to the surface the measurement started on
+            if (isFirstPoint) {
+                lockedPlane = hitResult.trackable as? com.google.ar.core.Plane
+            }
+
+            // Reset interaction time for auto-dim
+            lastInteractionTime = System.currentTimeMillis()
+
             overlayView.postInvalidate()
 
             // Hide plane renderer after first point for cleaner AR view
@@ -452,7 +798,7 @@ class MeasureActivity : AppCompatActivity() {
                 captureButtonCard.visibility = android.view.View.VISIBLE
             }
         } else {
-            Toast.makeText(this, "No surface detected. Move phone to find a surface.", Toast.LENGTH_SHORT).show()
+            haptic.error()
         }
     }
 
@@ -483,6 +829,8 @@ class MeasureActivity : AppCompatActivity() {
             }
             
             if (planes.isEmpty()) {
+                candidateRectangle = null
+                rectangleStableCount = 0
                 detectedRectangle = null
                 return
             }
@@ -517,12 +865,40 @@ class MeasureActivity : AppCompatActivity() {
                 }
             }
             
-            detectedRectangle = bestRectangle
-            
+            // Stability gate: only show a rectangle seen in the same place across
+            // consecutive scans — otherwise unstable detections flash yellow outlines
+            if (bestRectangle != null && candidateRectangle != null &&
+                rectanglesMatch(candidateRectangle!!, bestRectangle)
+            ) {
+                rectangleStableCount++
+            } else {
+                rectangleStableCount = if (bestRectangle != null) 1 else 0
+            }
+            candidateRectangle = bestRectangle
+            detectedRectangle = if (bestRectangle != null && rectangleStableCount >= 2) {
+                bestRectangle
+            } else {
+                null
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Rectangle detection error: ${e.message}")
+            candidateRectangle = null
+            rectangleStableCount = 0
             detectedRectangle = null
         }
+    }
+
+    /** Same rectangle if every corner moved less than 5cm between scans */
+    private fun rectanglesMatch(a: DetectedRectangle, b: DetectedRectangle): Boolean {
+        if (a.corners.size != b.corners.size) return false
+        for (i in a.corners.indices) {
+            val dx = a.corners[i].x - b.corners[i].x
+            val dy = a.corners[i].y - b.corners[i].y
+            val dz = a.corners[i].z - b.corners[i].z
+            if (kotlin.math.sqrt(dx * dx + dy * dy + dz * dz) > 0.05f) return false
+        }
+        return true
     }
     
     /**

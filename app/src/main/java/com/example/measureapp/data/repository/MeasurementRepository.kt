@@ -1,13 +1,14 @@
 package com.example.measureapp.data.repository
 
+import androidx.room.withTransaction
 import com.example.measureapp.data.local.dao.MeasurementDao
 import com.example.measureapp.data.local.dao.PointDao
+import com.example.measureapp.data.local.database.MeasureDatabase
 import com.example.measureapp.data.local.entities.MeasurementEntity
 import com.example.measureapp.data.local.entities.PointEntity
 import com.example.measureapp.data.models.Measurement
 import com.example.measureapp.data.models.MeasurementPoint
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,7 +19,8 @@ import javax.inject.Singleton
 @Singleton
 class MeasurementRepository @Inject constructor(
     private val measurementDao: MeasurementDao,
-    private val pointDao: PointDao
+    private val pointDao: PointDao,
+    private val database: MeasureDatabase
 ) {
     
     /**
@@ -65,25 +67,27 @@ class MeasurementRepository @Inject constructor(
         measurement: MeasurementEntity,
         points: List<MeasurementPoint>
     ): Long {
-        // Insert measurement first to get ID
-        val measurementId = measurementDao.insertMeasurement(measurement)
-        
-        // Convert and insert points
-        if (points.isNotEmpty()) {
-            val pointEntities = points.mapIndexed { index, point ->
-                PointEntity(
-                    measurementId = measurementId,
-                    pointIndex = index,
-                    x = point.position.x,
-                    y = point.position.y,
-                    z = point.position.z,
-                    timestamp = System.currentTimeMillis()
-                )
+        return database.withTransaction {
+            // Insert measurement first to get ID
+            val measurementId = measurementDao.insertMeasurement(measurement)
+
+            // Convert and insert points
+            if (points.isNotEmpty()) {
+                val pointEntities = points.mapIndexed { index, point ->
+                    PointEntity(
+                        measurementId = measurementId,
+                        pointIndex = index,
+                        x = point.position.x,
+                        y = point.position.y,
+                        z = point.position.z,
+                        timestamp = System.currentTimeMillis()
+                    )
+                }
+                pointDao.insertPoints(pointEntities)
             }
-            pointDao.insertPoints(pointEntities)
+
+            measurementId
         }
-        
-        return measurementId
     }
     
     /**
@@ -118,6 +122,6 @@ class MeasurementRepository @Inject constructor(
      * Get measurement count
      */
     fun getMeasurementCount(): Flow<Int> {
-        return getAllMeasurements().map { it.size }
+        return measurementDao.getMeasurementCount()
     }
 }
