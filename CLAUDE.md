@@ -33,7 +33,7 @@ Dependency versions live in `gradle/libs.versions.toml` (version catalog). Add l
 
 ### AR pipeline (the heart of the app)
 
-`MeasureActivity` hosts a SceneView `ARSceneView` (`io.github.sceneview:arsceneview:2.3.0`, a Kotlin wrapper over ARCore) plus a custom `OverlayView` (a `View` that does all 2D screen-space drawing each frame). **Don't downgrade SceneView below 2.3.0** — earlier versions bundle Filament `.so`s without 16 KB page alignment (Play requirement); `check_16kb_alignment.py` at the repo root verifies the APK.
+`MeasureActivity` hosts a SceneView `ARSceneView` (`io.github.sceneview:arsceneview:2.3.0`, a Kotlin wrapper over ARCore) plus a custom `OverlayView` (a `View` that does all 2D screen-space drawing each frame). **Don't downgrade SceneView below 2.3.0** — earlier versions bundle Filament `.so`s without 16 KB page alignment (Play requirement); the gitignored local helper `check_16kb_alignment.py` (parses ELF PT_LOAD `p_align` of the libs inside the APK) verifies compliance.
 
 Each ARCore frame, `onSessionUpdated` does:
 1. Hit-test the screen center against detected planes and the depth map.
@@ -75,7 +75,7 @@ Each ARCore frame, `onSessionUpdated` does:
 
 - **Two utility packages**: `util/` (`PermissionUtils`, `MathUtils`, `UnitConverter`) and `utils/` (`HapticFeedback`). Don't add to whichever you find first by accident — `util/` is the one used by the data/domain layers; `utils/` is AR-side.
 - **`kapt`** is used for both Room and Hilt — KSP migration hasn't happened. Don't mix the two annotation processors.
-- **`logcat_file`** (~940 KB) is checked into the repo root. It's a dump, not source — don't treat it as part of the build.
+- **`logcat_file`** at the repo root is a gitignored local log dump the owner refreshes when sharing device logs for debugging — read it when asked about test runs, never commit it.
 - **Schema export path**: `app/schemas/` is set via `kapt arguments` (`room.schemaLocation`). When you bump `MeasureDatabase` version, a new JSON appears there — commit it.
 - **`namespace = "com.example.measureapp"`** and `applicationId` are still on the placeholder; renaming is non-trivial because of the `BuildConfig` import in `MeasureApplication` and many string-fully-qualified class references in the activity.
 - **Lint disables `PermissionLaunchedDuringComposition`** in `app/build.gradle.kts` — camera permission is requested from the activity (not from Compose), so the warning is irrelevant.

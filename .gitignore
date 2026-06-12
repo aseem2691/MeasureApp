@@ -121,8 +121,21 @@ Thumbs.db
 secrets.properties
 .env
 .env.*
+
+########################################
+# Local-only project files
+########################################
+
+# Local debugging log dump (kept on disk for log sharing, never committed)
 logcat_file
+
+# Local helper scripts
+check_16kb_alignment.py
+
+# Editor/file backups and device dumps
+*.backup
+camera2_api_*.json
+
+# Reference images
 *.jpg
 ios-16-iphone-14-pro-measure-one-area.png
-.idea/deploymentTargetSelector.xml
-logcat_file
