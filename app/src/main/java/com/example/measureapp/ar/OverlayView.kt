@@ -52,10 +52,19 @@ class OverlayView @JvmOverloads constructor(
     // --- Paints (reused for performance) ---
 
     private val labelBackgroundPaint = Paint().apply {
-        color = Color.argb(200, 28, 28, 30)
+        color = Color.argb(230, 28, 28, 30)
         style = Paint.Style.FILL
         isAntiAlias = true
         setShadowLayer(6f, 0f, 2f, Color.argb(80, 0, 0, 0))
+    }
+
+    // Pre-built variants — creating Paint objects per label per frame causes GC churn
+    private val labelBackgroundLivePaint = Paint(labelBackgroundPaint).apply {
+        alpha = 178
+    }
+    private val labelBackgroundYellowPaint = Paint(labelBackgroundPaint).apply {
+        color = Color.rgb(255, 204, 0)
+        alpha = 242
     }
 
     private val labelTextPaint = Paint().apply {
@@ -93,6 +102,12 @@ class OverlayView @JvmOverloads constructor(
 
     private val liveLinePaint = Paint(linePaint).apply {
         alpha = 200
+    }
+
+    private val personLinePaint = Paint(linePaint).apply { alpha = 220 }
+    private val personLineStablePaint = Paint(linePaint).apply {
+        color = iosGreen
+        alpha = 220
     }
 
     private val endpointDotPaint = Paint().apply {
@@ -192,6 +207,24 @@ class OverlayView @JvmOverloads constructor(
             drawLabel(canvas, mid, manager.formatDistance(distance))
         }
 
+        // Area badges: pill at the live centroid of each closed polygon
+        for (badge in manager.areaBadges) {
+            var cx = 0f; var cy = 0f; var cz = 0f
+            for (anchor in badge.anchors) {
+                val p = anchor.pose
+                cx += p.tx(); cy += p.ty(); cz += p.tz()
+            }
+            val n = badge.anchors.size
+            if (n > 0) {
+                val centroid = Position(cx / n, cy / n, cz / n)
+                drawLabel(
+                    canvas, centroid,
+                    manager.unitType.formatArea(badge.areaSquareMeters),
+                    useYellowBackground = true
+                )
+            }
+        }
+
         // Live rubber-band line from last placed point to the reticle
         val liveStart = manager.activeStartPosition()
         val liveEnd = manager.getCurrentSmartHit().getPosition()
@@ -266,10 +299,7 @@ class OverlayView @JvmOverloads constructor(
      * Vertical measuring line over a detected person with the height label.
      */
     private fun drawPersonHeightIndicator(canvas: Canvas, indicator: PersonHeightIndicator) {
-        val paint = Paint(linePaint).apply {
-            color = if (indicator.isStable) iosGreen else Color.WHITE
-            alpha = 220
-        }
+        val paint = if (indicator.isStable) personLineStablePaint else personLinePaint
         val capHalf = dpToPx(10f)
 
         canvas.drawLine(indicator.head.x, indicator.head.y, indicator.feet.x, indicator.feet.y, paint)
@@ -330,15 +360,10 @@ class OverlayView @JvmOverloads constructor(
 
         drawnLabels.add(rectF)
 
-        val bgPaint = if (useYellowBackground) {
-            Paint(labelBackgroundPaint).apply {
-                color = iosYellow
-                alpha = (0.95f * 255).toInt()
-            }
-        } else {
-            Paint(labelBackgroundPaint).apply {
-                alpha = if (isLive) (0.7f * 255).toInt() else (0.9f * 255).toInt()
-            }
+        val bgPaint = when {
+            useYellowBackground -> labelBackgroundYellowPaint
+            isLive -> labelBackgroundLivePaint
+            else -> labelBackgroundPaint
         }
 
         canvas.drawRoundRect(rectF, cornerRadius, cornerRadius, bgPaint)

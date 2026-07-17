@@ -47,6 +47,13 @@ class MeasureActivity : AppCompatActivity() {
     @Inject lateinit var measurementRepository: MeasurementRepository
 
     private var autoSaveEnabled = true
+    private var soundEnabled = true
+    private val actionSound by lazy {
+        android.media.MediaActionSound().apply {
+            load(android.media.MediaActionSound.FOCUS_COMPLETE)
+            load(android.media.MediaActionSound.SHUTTER_CLICK)
+        }
+    }
 
     private val TAG = "MeasureActivity"
     private val CAMERA_PERMISSION_CODE = 1001
@@ -65,10 +72,9 @@ class MeasureActivity : AppCompatActivity() {
     private lateinit var helpHint: TextView
     private lateinit var captureButton: ImageView
     private lateinit var captureButtonCard: androidx.cardview.widget.CardView
-    private lateinit var modeLineCard: androidx.cardview.widget.CardView
     private lateinit var modeLineText: TextView
-    private lateinit var modeHeightCard: androidx.cardview.widget.CardView
     private lateinit var modeHeightText: TextView
+    private lateinit var modeAreaText: TextView
 
     private lateinit var measurementManager: MeasurementManager
     private lateinit var rectangleDetector: RectangleDetector
@@ -123,13 +129,13 @@ class MeasureActivity : AppCompatActivity() {
         helpHint = findViewById(R.id.help_hint)
         captureButton = findViewById(R.id.capture_button)
         captureButtonCard = findViewById(R.id.capture_button_card)
-        modeLineCard = findViewById(R.id.mode_line_card)
         modeLineText = findViewById(R.id.mode_line_text)
-        modeHeightCard = findViewById(R.id.mode_height_card)
         modeHeightText = findViewById(R.id.mode_height_text)
+        modeAreaText = findViewById(R.id.mode_area_text)
 
-        modeLineCard.setOnClickListener { setMeasureMode(MeasurementManager.MeasureMode.LINE) }
-        modeHeightCard.setOnClickListener { setMeasureMode(MeasurementManager.MeasureMode.HEIGHT) }
+        modeLineText.setOnClickListener { setMeasureMode(MeasurementManager.MeasureMode.LINE) }
+        modeHeightText.setOnClickListener { setMeasureMode(MeasurementManager.MeasureMode.HEIGHT) }
+        modeAreaText.setOnClickListener { setMeasureMode(MeasurementManager.MeasureMode.AREA) }
 
         // Initialize haptic feedback
         haptic = com.example.measureapp.utils.HapticFeedback(this)
@@ -184,6 +190,34 @@ class MeasureActivity : AppCompatActivity() {
         lifecycleScope.launch {
             preferencesRepository.rectangleDetectionEnabled.collect { enabled ->
                 rectangleDetectionEnabled = enabled
+            }
+        }
+
+        lifecycleScope.launch {
+            preferencesRepository.soundEnabled.collect { enabled ->
+                soundEnabled = enabled
+            }
+        }
+
+        // First-run quick tips (good plane scanning is most of the accuracy battle)
+        lifecycleScope.launch {
+            if (preferencesRepository.showTutorial.first()) {
+                androidx.appcompat.app.AlertDialog.Builder(this@MeasureActivity)
+                    .setTitle("Quick tips")
+                    .setMessage(
+                        "• Point at a textured surface (wood, tiles, fabric) and move " +
+                            "your phone slowly side to side until it locks on\n\n" +
+                            "• Tap + to place points — the reticle snaps to corners " +
+                            "and edges, turning green\n\n" +
+                            "• Use Height mode for vertical objects and Area mode for " +
+                            "surfaces\n\n" +
+                            "• Measure flat objects from directly above for best accuracy"
+                    )
+                    .setPositiveButton("Got it", null)
+                    .setOnDismissListener {
+                        lifecycleScope.launch { preferencesRepository.setTutorialShown() }
+                    }
+                    .show()
             }
         }
 
@@ -477,6 +511,7 @@ class MeasureActivity : AppCompatActivity() {
         captureButton.setOnClickListener {
             lifecycleScope.launch {
                 try {
+                    if (soundEnabled) actionSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
                     Toast.makeText(this@MeasureActivity, "Capturing...", Toast.LENGTH_SHORT).show()
                     val uri = measurementCapture.captureAndSave()
 
@@ -634,13 +669,19 @@ class MeasureActivity : AppCompatActivity() {
     private fun persistMeasurement(completed: MeasurementManager.CompletedMeasurement, label: String?) {
         lifecycleScope.launch {
             try {
-                val type = if (completed.points.size > 2) MeasurementType.PATH else MeasurementType.POINT_TO_POINT
+                val area = completed.areaSquareMeters
+                val type = when {
+                    area != null -> MeasurementType.AREA
+                    completed.points.size > 2 -> MeasurementType.PATH
+                    else -> MeasurementType.POINT_TO_POINT
+                }
                 measurementRepository.saveMeasurement(
                     MeasurementEntity(
                         type = type,
-                        value = completed.totalMeters,
+                        value = area ?: completed.totalMeters,
                         unit = measurementManager.unitType,
-                        label = label ?: ""
+                        label = label ?: "",
+                        rectangleArea = area
                     ),
                     completed.points.map { MeasurementPoint(Vector3(it.x, it.y, it.z)) }
                 )
@@ -673,10 +714,17 @@ class MeasureActivity : AppCompatActivity() {
         measurementSubtitle.text = if (result.isStable) "🧍 $formatted · tap to save" else "🧍 $formatted"
     }
 
+    private fun playPointSound() {
+        if (soundEnabled) {
+            actionSound.play(android.media.MediaActionSound.FOCUS_COMPLETE)
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         personHeightEstimator.close()
         measurementAutoLabeler.close()
+        actionSound.release()
     }
 
     /** Finish the in-progress measurement, persist it, reset for the next one */
@@ -700,15 +748,26 @@ class MeasureActivity : AppCompatActivity() {
         }
         measurementManager.measureMode = mode
 
-        val selectedBg = android.graphics.Color.parseColor("#FFCC00")
-        val unselectedBg = android.graphics.Color.parseColor("#CC1C1C1E")
-        val isLine = mode == MeasurementManager.MeasureMode.LINE
-        modeLineCard.setCardBackgroundColor(if (isLine) selectedBg else unselectedBg)
-        modeLineText.setTextColor(if (isLine) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
-        modeHeightCard.setCardBackgroundColor(if (isLine) unselectedBg else selectedBg)
-        modeHeightText.setTextColor(if (isLine) android.graphics.Color.WHITE else android.graphics.Color.BLACK)
+        val segments = listOf(
+            MeasurementManager.MeasureMode.LINE to modeLineText,
+            MeasurementManager.MeasureMode.HEIGHT to modeHeightText,
+            MeasurementManager.MeasureMode.AREA to modeAreaText
+        )
+        for ((segmentMode, text) in segments) {
+            if (segmentMode == mode) {
+                text.setBackgroundResource(R.drawable.segment_selected)
+                text.setTextColor(android.graphics.Color.BLACK)
+            } else {
+                text.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                text.setTextColor(android.graphics.Color.WHITE)
+            }
+        }
 
-        promptText.text = if (isLine) "Tap + to start" else "Tap + on the base of the object"
+        promptText.text = when (mode) {
+            MeasurementManager.MeasureMode.LINE -> "Tap + to start"
+            MeasurementManager.MeasureMode.HEIGHT -> "Tap + on the base of the object"
+            MeasurementManager.MeasureMode.AREA -> "Tap + on each corner, ✓ to close"
+        }
         haptic.lightImpact()
     }
 
@@ -727,6 +786,7 @@ class MeasureActivity : AppCompatActivity() {
             }
             measurementManager.addPoint(anchor)
             haptic.mediumImpact()
+            playPointSound()
             overlayView.postInvalidate()
             // Heights are two-point measurements — complete and save immediately
             completeMeasurement()
@@ -765,7 +825,18 @@ class MeasureActivity : AppCompatActivity() {
                     haptic.mediumImpact()
                 }
                 is SmartHit.Surface -> {
-                    val anchor = hitResult.createAnchor()
+                    // Place at the multi-frame median position when the reticle has
+                    // been steady — cancels single-frame jitter at tap time
+                    val stablePose = measurementManager.stableSurfacePose()
+                    val anchor = if (stablePose != null) {
+                        try {
+                            hitResult.trackable.createAnchor(stablePose)
+                        } catch (e: Exception) {
+                            hitResult.createAnchor()
+                        }
+                    } else {
+                        hitResult.createAnchor()
+                    }
                     measurementManager.addPoint(anchor, isExistingAnchor = false)
                     haptic.mediumImpact()
                 }
@@ -774,6 +845,8 @@ class MeasureActivity : AppCompatActivity() {
                     return
                 }
             }
+
+            playPointSound()
 
             // Lock subsequent hit tests to the surface the measurement started on
             if (isFirstPoint) {

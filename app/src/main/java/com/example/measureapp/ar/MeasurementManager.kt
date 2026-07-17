@@ -66,18 +66,23 @@ class MeasurementManager(
 ) {
     /**
      * LINE measures point-to-point on surfaces. HEIGHT measures vertically: first
-     * tap places a base point, then the live point is the closest point on the
-     * vertical axis through the base to the camera ray — pure geometry, no depth
-     * or plane needed for the top point (works even when the Depth API is broken).
+     * tap places a base point, then the live point is derived from the camera ray
+     * geometry — no depth or plane needed for the top point (works even when the
+     * Depth API is broken). AREA places corners like LINE; finishing closes the
+     * polygon and reports area + perimeter.
      */
-    enum class MeasureMode { LINE, HEIGHT }
+    enum class MeasureMode { LINE, HEIGHT, AREA }
+
+    /** A closed polygon; the area pill tracks the live centroid of its anchors */
+    data class AreaBadge(val anchors: List<Anchor>, val areaSquareMeters: Float)
 
     data class MeasurementChain(val segments: MutableList<Float> = mutableListOf())
     data class LineSegment(val start: Position, val end: Position)
     data class CompletedMeasurement(
         val totalMeters: Float,
         val segments: List<Float>,
-        val points: List<Position>
+        val points: List<Position>,
+        val areaSquareMeters: Float? = null
     )
 
     /** A finished measurement line; endpoints follow their anchors as ARCore refines them */
@@ -94,6 +99,8 @@ class MeasurementManager(
     private val measurementChains = mutableListOf<MeasurementChain>()
     private var currentChain = MeasurementChain()
     private val currentChainPositions = mutableListOf<Position>()
+    private val currentChainAnchors = mutableListOf<Anchor>()
+    val areaBadges = mutableListOf<AreaBadge>()
     private var currentSmartHit: SmartHit = SmartHit.None
 
     private var lastAnchor: Anchor? = null
@@ -125,6 +132,12 @@ class MeasurementManager(
     // Adaptive distance smoothing for consistent measurements
     private var smoothedDistance: Float = 0f
     private var lastDisplayedDistance: Float = 0f
+
+    // Recent raw Surface hit positions; a tap places the median of a tight cluster
+    // instead of the single-frame position, cancelling tap-moment jitter
+    private val recentSurfacePositions = ArrayDeque<Position>()
+    private val SURFACE_SAMPLE_WINDOW = 6
+    private val SURFACE_STABLE_SPREAD = 0.02f // 2cm
 
     // Snapping thresholds - iOS precision levels
     private val VERTEX_SNAP_DISTANCE = 0.035f     // 3.5cm vertex snapping
@@ -209,6 +222,19 @@ class MeasurementManager(
 
         // ALWAYS perform smart hit testing so reticle works before first point
         currentSmartHit = performSmartHitTest(hitResult)
+
+        // Track raw surface positions for tap-time averaging
+        val hit = currentSmartHit
+        if (hit is SmartHit.Surface) {
+            recentSurfacePositions.addLast(
+                Position(hit.hitPose.tx(), hit.hitPose.ty(), hit.hitPose.tz())
+            )
+            while (recentSurfacePositions.size > SURFACE_SAMPLE_WINDOW) {
+                recentSurfacePositions.removeFirst()
+            }
+        } else {
+            recentSurfacePositions.clear()
+        }
 
         // If no start point yet, just update currentSmartHit and return
         val startAnchor = lastAnchor ?: return
@@ -299,6 +325,28 @@ class MeasurementManager(
 
     fun getCurrentSmartHit(): SmartHit = currentSmartHit
 
+    /**
+     * Median of the recent Surface hit positions when they form a tight cluster —
+     * a steadier placement than the single-frame hit — or null when unstable.
+     */
+    fun stableSurfacePose(): Pose? {
+        if (recentSurfacePositions.size < 4) return null
+        val xs = recentSurfacePositions.map { it.x }.sorted()
+        val ys = recentSurfacePositions.map { it.y }.sorted()
+        val zs = recentSurfacePositions.map { it.z }.sorted()
+        val spread = maxOf(
+            xs.last() - xs.first(),
+            ys.last() - ys.first(),
+            zs.last() - zs.first()
+        )
+        if (spread > SURFACE_STABLE_SPREAD) return null
+        val mid = recentSurfacePositions.size / 2
+        return Pose(
+            floatArrayOf(xs[mid], ys[mid], zs[mid]),
+            floatArrayOf(0f, 0f, 0f, 1f)
+        )
+    }
+
     /** Start position of the live rubber-band line, or null when not measuring */
     fun activeStartPosition(): Position? = lastAnchor?.pose?.let {
         Position(it.tx(), it.ty(), it.tz())
@@ -314,6 +362,7 @@ class MeasurementManager(
 
         anchors.add(finalAnchor)
         pointHadNode.add(shouldRenderSphere)
+        currentChainAnchors.add(finalAnchor)
         hasStartedMeasurement = true
         finalAnchor.pose.let { p ->
             currentChainPositions.add(Position(p.tx(), p.ty(), p.tz()))
@@ -333,11 +382,13 @@ class MeasurementManager(
             lastAnchor = finalAnchor
         } else {
             lastAnchor = finalAnchor
-            if (measureMode == MeasureMode.HEIGHT) {
-                heightBasePosition = finalAnchor.pose.let { Position(it.tx(), it.ty(), it.tz()) }
-                onMeasurementChanged("Aim above the base to measure height")
-            } else {
-                onMeasurementChanged("Move to end point")
+            when (measureMode) {
+                MeasureMode.HEIGHT -> {
+                    heightBasePosition = finalAnchor.pose.let { Position(it.tx(), it.ty(), it.tz()) }
+                    onMeasurementChanged("Aim above the base to measure height")
+                }
+                MeasureMode.AREA -> onMeasurementChanged("Add corners, then ✓ to close")
+                MeasureMode.LINE -> onMeasurementChanged("Move to end point")
             }
         }
 
@@ -362,12 +413,25 @@ class MeasurementManager(
     }
 
     fun finishCurrentMeasurement(): CompletedMeasurement? {
+        // AREA mode: close the polygon (last corner back to first) and compute area
+        var areaSquareMeters: Float? = null
+        if (measureMode == MeasureMode.AREA && currentChainAnchors.size >= 3) {
+            val first = currentChainAnchors.first()
+            val last = currentChainAnchors.last()
+            if (first != last) {
+                commitSegment(last, first)
+            }
+            areaSquareMeters = polygonArea(currentChainPositions)
+            areaBadges.add(AreaBadge(currentChainAnchors.toList(), areaSquareMeters))
+        }
+
         // Capture the finished chain so callers can persist it
         val completed = if (currentChain.segments.isNotEmpty()) {
             CompletedMeasurement(
                 totalMeters = currentChain.segments.sum(),
                 segments = currentChain.segments.toList(),
-                points = currentChainPositions.toList()
+                points = currentChainPositions.toList(),
+                areaSquareMeters = areaSquareMeters
             )
         } else null
 
@@ -376,6 +440,7 @@ class MeasurementManager(
             currentChain = MeasurementChain()
         }
         currentChainPositions.clear()
+        currentChainAnchors.clear()
 
         // Break the chain so the next + starts a NEW separate measurement.
         // Snap targets (cornerNodes, renderSegments) intentionally stay alive so
@@ -388,7 +453,11 @@ class MeasurementManager(
         currentLivePosition = null
         heightBasePosition = null
 
-        if (completed != null) {
+        if (completed?.areaSquareMeters != null) {
+            onMeasurementChanged(
+                "Area: ${unitType.formatArea(completed.areaSquareMeters)}\nTap + for new"
+            )
+        } else if (completed != null) {
             onMeasurementChanged("Done: ${formatDistance(completed.totalMeters)}\nTap + for new")
         } else if (anchors.isNotEmpty()) {
             onMeasurementChanged("Tap + for new measurement")
@@ -426,6 +495,7 @@ class MeasurementManager(
             currentChain.segments.removeLastOrNull()
         }
         currentChainPositions.removeLastOrNull()
+        currentChainAnchors.removeLastOrNull()
 
         lastAnchor = anchors.lastOrNull()
         smoothedDistance = 0f
@@ -466,6 +536,8 @@ class MeasurementManager(
         measurementChains.clear()
         currentChain = MeasurementChain()
         currentChainPositions.clear()
+        currentChainAnchors.clear()
+        areaBadges.clear()
 
         lastAnchor = null
         currentLivePosition = null
@@ -509,5 +581,23 @@ class MeasurementManager(
         if (segmentLengthSq < 1e-8f) return start
         val t = (dot(point - start, segment) / segmentLengthSq).coerceIn(0f, 1f)
         return start + (segment * t)
+    }
+
+    /**
+     * Area of a (near-planar) 3D polygon: half the magnitude of the summed cross
+     * products (Newell's method) — exact for planar polygons, robust to the small
+     * out-of-plane noise our plane-locked points have.
+     */
+    private fun polygonArea(points: List<Position>): Float {
+        if (points.size < 3) return 0f
+        var nx = 0f; var ny = 0f; var nz = 0f
+        for (i in points.indices) {
+            val p = points[i]
+            val q = points[(i + 1) % points.size]
+            nx += p.y * q.z - p.z * q.y
+            ny += p.z * q.x - p.x * q.z
+            nz += p.x * q.y - p.y * q.x
+        }
+        return 0.5f * sqrt(nx * nx + ny * ny + nz * nz)
     }
 }

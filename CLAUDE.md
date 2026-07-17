@@ -41,7 +41,7 @@ Each ARCore frame, `onSessionUpdated` does:
 3. Update the reticle (drawn by `OverlayView` in 2D: thin ring + dot, green when snapped) and the live measurement pill.
 4. `RectangleDetector` separately walks ARCore plane polygons looking for 4-corner rectangles within angle/size tolerances; results render as an overlay and feed `rectangleSnapTargets`.
 
-**Measure modes**: `MeasurementManager.MeasureMode.LINE` (point-to-point on surfaces) and `HEIGHT` (first tap anchors a base point; the live point is the closest point on the vertical world axis through the base to the screen-center camera ray — pure geometry, deliberately depth-independent because the Depth API is broken on some devices, e.g. S25 Ultra). Height measurements auto-complete after the second point. Mode pills live in `activity_measure.xml` (`mode_row`).
+**Measure modes**: `MeasurementManager.MeasureMode.LINE` (point-to-point on surfaces), `HEIGHT` (first tap anchors a base point; the live point comes from intersecting the screen-center camera ray with the vertical plane through the base — pure geometry, deliberately depth-independent because the Depth API is broken on some devices, e.g. S25 Ultra; auto-completes after the second point), and `AREA` (corners placed like LINE; Done closes the polygon, computes Newell area, and renders a live centroid badge via `areaBadges`). Mode pills live in `activity_measure.xml` (`mode_row`). Surface point placement uses `stableSurfacePose()` — the median of recent reticle positions when they cluster within 2 cm — to cancel tap-moment jitter.
 
 **Rendering model (important)**: measurement lines and labels are NOT 3D nodes. `MeasurementManager.renderSegments` holds `(startAnchor, endAnchor)` pairs; `OverlayView` projects the live anchor poses every frame and draws thin 2D lines + label pills. This keeps lines crisp, is automatically drift-corrected as ARCore refines anchors, and replaced an older `CylinderNode` + `refreshLines()` approach that produced thick shaded tubes and ghost-line index-mismatch bugs. Only the small white corner-dot spheres are real 3D nodes. When placing a `SnappedEdge` point, the anchor must be created at the **snapped** pose (`hitResult.trackable.createAnchor(pose)`), not the raw hit.
 
@@ -64,7 +64,7 @@ Each ARCore frame, `onSessionUpdated` does:
 ### UI layers (mixed)
 
 - `MeasureActivity` is a classic `AppCompatActivity` with an XML layout (`res/layout/activity_measure.xml`) — it does **not** use Compose because SceneView wants a real `SurfaceView` in a `ConstraintLayout`.
-- `ui/screens/` (`HistoryScreen`, `SettingsScreen`) and `level/LevelScreen` are **Compose**, consumed by `AppNavigation`. (`ui/screens/MeasureScreen.kt` and `ui/NavGraphWithBottomBar.kt` are empty stub files.)
+- `ui/screens/` (`HistoryScreen`, `SettingsScreen`) and `level/LevelScreen` are **Compose**, consumed by `AppNavigation`.
 - `OverlayView` is a hand-rolled `View` doing per-frame `Canvas` drawing for labels and rectangle overlays.
 
 ### Domain layer

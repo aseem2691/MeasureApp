@@ -143,13 +143,28 @@ fun HistoryScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MeasurementCard(
     measurement: MeasurementEntity,
     unitType: UnitType,
     onDelete: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val formattedValue = if (measurement.type == MeasurementType.AREA) {
+        unitType.formatArea(measurement.value)
+    } else {
+        unitType.formatDistance(measurement.value)
+    }
+
     Card(
+        onClick = {
+            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+            clipboard?.setPrimaryClip(
+                android.content.ClipData.newPlainText("Measurement", formattedValue)
+            )
+            android.widget.Toast.makeText(context, "Copied: $formattedValue", android.widget.Toast.LENGTH_SHORT).show()
+        },
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -176,9 +191,9 @@ private fun MeasurementCard(
 
             // Info column
             Column(modifier = Modifier.weight(1f)) {
-                // Distance value
+                // Measurement value (area-aware)
                 Text(
-                    text = unitType.formatDistance(measurement.value),
+                    text = formattedValue,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
